@@ -74,7 +74,7 @@ fn generate_random_instructions(count: usize, rng: &mut SimpleRng) -> Vec<u32> {
         }
         let rs1 = rng.range(1, 31) as usize;
         let rs2 = rng.range(1, 31) as usize;
-        let rs3 = rng.range(1, 31) as usize;
+        let _rs3 = rng.range(1, 31) as usize;
         let frd = rng.range(0, 31) as usize;
         let frs1 = rng.range(0, 31) as usize;
         let frs2 = rng.range(0, 31) as usize;
@@ -202,7 +202,8 @@ fn ensure_whisper_oracle_built() -> String {
 fn test_differential_harness_against_cpp_oracle() {
     let oracle_bin = ensure_whisper_oracle_built();
 
-    let mut rng = SimpleRng::new(0xDEADBEEF12345678);
+    let seed: u64 = 0xDEADBEEF12345678;
+    let mut rng = SimpleRng::new(seed);
     let num_insts = 100;
     let instructions = generate_random_instructions(num_insts, &mut rng);
 
@@ -248,16 +249,14 @@ fn test_differential_harness_against_cpp_oracle() {
 
     // Run 100 instruction steps in rust_cpu
     rust_cpu.pc = 0;
-    for step in 0..num_insts {
-        let pc = rust_cpu.pc;
-        let inst = rust_mem.read_u32(pc);
+    for _ in 0..num_insts {
+        let inst = rust_mem.read_u32(rust_cpu.pc);
         rust_cpu.execute_inst(inst, &mut rust_mem).expect("Rust CPU execution error");
-        println!("Rust Step #{:2}: PC={:#010x} inst={:#010x}", step + 1, pc, inst);
     }
 
     // 3. Run C++ Whisper Oracle
     let mut whisper_proc = Command::new(&oracle_bin)
-        .args(["--isa", "imafdc", "--raw", "--log", "--interactive"])
+        .args(["--isa", "imafdc", "--raw", "--interactive"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -308,13 +307,10 @@ fn test_differential_harness_against_cpp_oracle() {
         }
     }
 
-    // Expected lines in parsed output:
-    // Line 0: PC
-    // Lines 1..31: x1..x31
-    // Lines 32..63: f0..f31
     assert!(
         lines_parsed.len() >= 64,
-        "Insufficient output lines from whisper oracle! Received {}",
+        "Seed: {:#018x} - Insufficient output lines from whisper oracle! Received {}",
+        seed,
         lines_parsed.len()
     );
 
@@ -327,22 +323,18 @@ fn test_differential_harness_against_cpp_oracle() {
     }
 
     // 4. Differential State Comparison between Rust-Whisper & C++ Oracle
-    println!("Comparing Rust CPU state against C++ Oracle state after 100 random instructions...");
-
     assert_eq!(
         rust_cpu.pc, oracle_pc,
-        "PC Mismatch! Rust PC: {:#010x}, Oracle PC: {:#010x}",
-        rust_cpu.pc, oracle_pc
+        "Seed: {:#018x} - PC Mismatch! Rust PC: {:#010x}, Oracle PC: {:#010x}",
+        seed, rust_cpu.pc, oracle_pc
     );
 
     for i in 1..32 {
         assert_eq!(
             rust_cpu.read_reg(i),
             oracle_regs[i],
-            "Register x{} mismatch! Rust: {:#010x}, Oracle: {:#010x}",
-            i,
-            rust_cpu.read_reg(i),
-            oracle_regs[i]
+            "Seed: {:#018x} - Register x{} mismatch! Rust: {:#010x}, Oracle: {:#010x}",
+            seed, i, rust_cpu.read_reg(i), oracle_regs[i]
         );
     }
 
@@ -350,12 +342,8 @@ fn test_differential_harness_against_cpp_oracle() {
         assert_eq!(
             rust_cpu.fregs[i].to_bits(),
             oracle_fregs[i],
-            "FP Register f{} mismatch! Rust: {:#018x}, Oracle: {:#018x}",
-            i,
-            rust_cpu.fregs[i].to_bits(),
-            oracle_fregs[i]
+            "Seed: {:#018x} - FP Register f{} mismatch! Rust: {:#018x}, Oracle: {:#018x}",
+            seed, i, rust_cpu.fregs[i].to_bits(), oracle_fregs[i]
         );
     }
-
-    println!("SUCCESS! All 32 integer registers, 32 float registers, and PC match 100% between Rust emulator and C++ Oracle!");
 }
