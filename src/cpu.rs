@@ -62,7 +62,7 @@ impl Cpu {
     #[inline(always)]
     pub fn write_f32(&mut self, reg: usize, val: f32) {
         let bits = if val.is_nan() {
-            0xFFFFFFFF7FC00000u64 | ((val.to_bits() as u64) & 0x80000000)
+            0xFFFFFFFF7FC00000u64
         } else {
             0xFFFFFFFF00000000u64 | (val.to_bits() as u64)
         };
@@ -77,7 +77,7 @@ impl Cpu {
     #[inline(always)]
     pub fn write_f64(&mut self, reg: usize, val: f64) {
         let res_val = if val.is_nan() {
-            f64::from_bits(0x7FF8000000000000 | (val.to_bits() & 0x8000000000000000))
+            f64::from_bits(0x7FF8000000000000)
         } else {
             val
         };
@@ -370,7 +370,7 @@ impl Cpu {
                             2 => (b1 & 0x7FFFFFFF) | ((b1 ^ b2) & 0x80000000),  // FSGNJX
                             _ => return Err(format!("Unknown FSGNJ funct3: {}", funct3)),
                         };
-                        self.write_f32(rd, f32::from_bits(res_bits));
+                        self.fregs[rd] = f64::from_bits(0xFFFFFFFF00000000u64 | (res_bits as u64));
                     }
                     (0, 0x05) => { // FMIN / FMAX .S
                         let s1 = self.read_f32(rs1);

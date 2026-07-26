@@ -446,34 +446,34 @@ fn test_rv32f_single_precision() {
 
     let inst = encode_i(0x07, 1, 2, 1, 0); // FLW f1, 0(x1)
     assert!(cpu.execute_inst(inst, &mut mem).is_ok());
-    assert_eq!(cpu.fregs[1] as f32, 3.5);
+    assert_eq!(cpu.read_f32(1), 3.5);
 
     // FADD.S f3 = f1 (3.5) + f2 (1.5)
-    cpu.fregs[2] = 1.5;
+    cpu.write_f32(2, 1.5);
     let inst = encode_r(0x53, 3, 0, 1, 2, 0x00); // FADD.S
     assert!(cpu.execute_inst(inst, &mut mem).is_ok());
-    assert_eq!(cpu.fregs[3] as f32, 5.0);
+    assert_eq!(cpu.read_f32(3), 5.0);
 
     // FSUB.S f4 = f1 (3.5) - f2 (1.5) = 2.0
     let inst = encode_r(0x53, 4, 0, 1, 2, 0x04); // FSUB.S
     assert!(cpu.execute_inst(inst, &mut mem).is_ok());
-    assert_eq!(cpu.fregs[4] as f32, 2.0);
+    assert_eq!(cpu.read_f32(4), 2.0);
 
     // FMUL.S f5 = f1 (3.5) * f2 (1.5) = 5.25
     let inst = encode_r(0x53, 5, 0, 1, 2, 0x08); // FMUL.S
     assert!(cpu.execute_inst(inst, &mut mem).is_ok());
-    assert_eq!(cpu.fregs[5] as f32, 5.25);
+    assert_eq!(cpu.read_f32(5), 5.25);
 
     // FDIV.S f6 = f3 (5.0) / f4 (2.0) = 2.5
     let inst = encode_r(0x53, 6, 0, 3, 4, 0x0C); // FDIV.S
     assert!(cpu.execute_inst(inst, &mut mem).is_ok());
-    assert_eq!(cpu.fregs[6] as f32, 2.5);
+    assert_eq!(cpu.read_f32(6), 2.5);
 
     // FSQRT.S f7 = sqrt(f5 (5.25) -> f4 (4.0)) -> 2.0
-    cpu.fregs[8] = 4.0;
+    cpu.write_f32(8, 4.0);
     let inst = encode_r(0x53, 7, 0, 8, 0, 0x2C); // FSQRT.S
     assert!(cpu.execute_inst(inst, &mut mem).is_ok());
-    assert_eq!(cpu.fregs[7] as f32, 2.0);
+    assert_eq!(cpu.read_f32(7), 2.0);
 
     // FSW f3 (5.0) to memory
     let inst = encode_s(0x27, 2, 1, 3, 4); // FSW f3 at offset 4
@@ -488,7 +488,7 @@ fn test_rv32f_single_precision() {
     // FMV.W.X f9, x10
     let inst = encode_r(0x53, 9, 0, 10, 0, 0x78);
     assert!(cpu.execute_inst(inst, &mut mem).is_ok());
-    assert_eq!(cpu.fregs[9] as f32, 5.0);
+    assert_eq!(cpu.read_f32(9), 5.0);
 
     // FCVT.W.S x11, f3 (5.0) -> 5
     let inst = encode_r(0x53, 11, 0, 3, 0, 0x60);
@@ -557,21 +557,24 @@ fn test_rv32f_rv32d_fused_multiply_add() {
     let mut cpu = Cpu::new();
     let mut mem = Memory::new();
 
-    cpu.fregs[1] = 2.0;
-    cpu.fregs[2] = 3.0;
-    cpu.fregs[3] = 4.0;
+    cpu.write_f32(1, 2.0);
+    cpu.write_f32(2, 3.0);
+    cpu.write_f32(3, 4.0);
 
     // FMADD.S f4 = (2.0 * 3.0) + 4.0 = 10.0
     let inst = encode_r4(0x43, 4, 0, 1, 2, 3, 0); // fmt=0 (.s)
     assert!(cpu.execute_inst(inst, &mut mem).is_ok());
-    assert_eq!(cpu.fregs[4] as f32, 10.0);
+    assert_eq!(cpu.read_f32(4), 10.0);
 
     // FMSUB.S f5 = (2.0 * 3.0) - 4.0 = 2.0
     let inst = encode_r4(0x47, 5, 0, 1, 2, 3, 0);
     assert!(cpu.execute_inst(inst, &mut mem).is_ok());
-    assert_eq!(cpu.fregs[5] as f32, 2.0);
+    assert_eq!(cpu.read_f32(5), 2.0);
 
     // FMADD.D f6 = (2.0 * 3.0) + 4.0 = 10.0
+    cpu.write_f64(1, 2.0);
+    cpu.write_f64(2, 3.0);
+    cpu.write_f64(3, 4.0);
     let inst = encode_r4(0x43, 6, 0, 1, 2, 3, 1); // fmt=1 (.d)
     assert!(cpu.execute_inst(inst, &mut mem).is_ok());
     assert_eq!(cpu.fregs[6], 10.0);
@@ -667,32 +670,32 @@ fn test_fp_sign_injection_min_max_class_conversions() {
     let mut mem = Memory::new();
 
     // Sign Injection .S
-    cpu.fregs[1] = 2.5;  // positive
-    cpu.fregs[2] = -1.0; // negative
+    cpu.write_f32(1, 2.5);  // positive
+    cpu.write_f32(2, -1.0); // negative
 
     // FSGNJ.S f3 = mag(f1), sign(f2) -> -2.5
     let inst = encode_r(0x53, 3, 0, 1, 2, 0x10);
     assert!(cpu.execute_inst(inst, &mut mem).is_ok());
-    assert_eq!(cpu.fregs[3] as f32, -2.5);
+    assert_eq!(cpu.read_f32(3), -2.5);
 
     // FSGNJN.S f4 = mag(f1), -sign(f2) -> +2.5
     let inst = encode_r(0x53, 4, 1, 1, 2, 0x10);
     assert!(cpu.execute_inst(inst, &mut mem).is_ok());
-    assert_eq!(cpu.fregs[4] as f32, 2.5);
+    assert_eq!(cpu.read_f32(4), 2.5);
 
     // FSGNJX.S f5 = mag(f1), sign(f1)^sign(f2) -> -2.5
     let inst = encode_r(0x53, 5, 2, 1, 2, 0x10);
     assert!(cpu.execute_inst(inst, &mut mem).is_ok());
-    assert_eq!(cpu.fregs[5] as f32, -2.5);
+    assert_eq!(cpu.read_f32(5), -2.5);
 
     // FMIN.S / FMAX.S
     let inst = encode_r(0x53, 6, 0, 1, 2, 0x14); // FMIN.S (2.5 vs -1.0) -> -1.0
     assert!(cpu.execute_inst(inst, &mut mem).is_ok());
-    assert_eq!(cpu.fregs[6] as f32, -1.0);
+    assert_eq!(cpu.read_f32(6), -1.0);
 
     let inst = encode_r(0x53, 7, 1, 1, 2, 0x14); // FMAX.S (2.5 vs -1.0) -> 2.5
     assert!(cpu.execute_inst(inst, &mut mem).is_ok());
-    assert_eq!(cpu.fregs[7] as f32, 2.5);
+    assert_eq!(cpu.read_f32(7), 2.5);
 
     // FCLASS.S
     let inst = encode_r(0x53, 8, 1, 1, 0, 0x70); // FCLASS.S f1 (2.5, positive normal) -> bit 6 = 1 << 6 = 64
@@ -703,17 +706,17 @@ fn test_fp_sign_injection_min_max_class_conversions() {
     cpu.write_reg(10, 100);
     let inst = encode_r(0x53, 9, 0, 10, 0, 0x68);
     assert!(cpu.execute_inst(inst, &mut mem).is_ok());
-    assert_eq!(cpu.fregs[9] as f32, 100.0);
+    assert_eq!(cpu.read_f32(9), 100.0);
 
     // FCVT.D.S f10, f9 (100.0) -> 100.0
     let inst = encode_r(0x53, 10, 0, 9, 0, 0x21);
     assert!(cpu.execute_inst(inst, &mut mem).is_ok());
-    assert_eq!(cpu.fregs[10], 100.0);
+    assert_eq!(cpu.read_f64(10), 100.0);
 
     // FCVT.S.D f11, f10 (100.0) -> 100.0
     let inst = encode_r(0x53, 11, 0, 10, 1, 0x20);
     assert!(cpu.execute_inst(inst, &mut mem).is_ok());
-    assert_eq!(cpu.fregs[11] as f32, 100.0);
+    assert_eq!(cpu.read_f32(11), 100.0);
 }
 
 #[test]
