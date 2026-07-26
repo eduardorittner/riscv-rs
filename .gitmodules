@@ -1,3 +1,4 @@
-[submodule "emulators/SweRV-ISS-1"]
-	path = emulators/SweRV-ISS-1
+[submodule "SweRV-ISS-1"]
+	path = SweRV-ISS-1
 	url = git@github.com:antoniocgj/SweRV-ISS-1.git
+

@@ -37,14 +37,14 @@ fn encode_r4(opcode: u32, rd: usize, funct3: u32, rs1: usize, rs2: usize, rs3: u
 }
 
 fn ensure_whisper_oracle_built() -> String {
-    let oracle_path = std::path::Path::new("emulators/SweRV-ISS-1/opt/whisper");
+    let oracle_path = std::path::Path::new("SweRV-ISS-1/opt/whisper");
     if !oracle_path.exists() {
         println!("Building SweRV-ISS-1 oracle emulator binary...");
         let status = Command::new("make")
             .args(["-f", "GNUmakefile.wdc", "BOOST_DIR=/opt/homebrew/opt/boost", "opt"])
-            .current_dir("emulators/SweRV-ISS-1")
+            .current_dir("SweRV-ISS-1")
             .status()
-            .expect("Failed to execute make in emulators/SweRV-ISS-1");
+            .expect("Failed to execute make in SweRV-ISS-1");
         assert!(status.success(), "Building SweRV-ISS-1 failed!");
     }
     oracle_path.to_str().unwrap().to_string()
