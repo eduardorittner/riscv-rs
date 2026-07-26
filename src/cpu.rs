@@ -49,6 +49,41 @@ impl Cpu {
         }
     }
 
+    #[inline(always)]
+    pub fn read_f32(&self, reg: usize) -> f32 {
+        let bits = self.fregs[reg].to_bits();
+        if (bits >> 32) == 0xFFFFFFFF {
+            f32::from_bits(bits as u32)
+        } else {
+            f32::from_bits(0x7FC00000) // Canonical NaN
+        }
+    }
+
+    #[inline(always)]
+    pub fn write_f32(&mut self, reg: usize, val: f32) {
+        let bits = if val.is_nan() {
+            0xFFFFFFFF7FC00000u64 | ((val.to_bits() as u64) & 0x80000000)
+        } else {
+            0xFFFFFFFF00000000u64 | (val.to_bits() as u64)
+        };
+        self.fregs[reg] = f64::from_bits(bits);
+    }
+
+    #[inline(always)]
+    pub fn read_f64(&self, reg: usize) -> f64 {
+        self.fregs[reg]
+    }
+
+    #[inline(always)]
+    pub fn write_f64(&mut self, reg: usize, val: f64) {
+        let res_val = if val.is_nan() {
+            f64::from_bits(0x7FF8000000000000 | (val.to_bits() & 0x8000000000000000))
+        } else {
+            val
+        };
+        self.fregs[reg] = res_val;
+    }
+
     pub fn run<M: MemoryOps>(&mut self, mem: &mut M) -> i32 {
         let mut inst_counter: u32 = 0;
         let mut int_delay = host_imports::js_get_int_inst_delay() as u32;
@@ -280,11 +315,11 @@ impl Cpu {
                 let addr = self.read_reg(rs1).wrapping_add(imm as u32);
                 if funct3 == 2 { // FLW
                     let bits = mem.read_u32(addr);
-                    self.fregs[rd] = f32::from_bits(bits) as f64;
+                    self.write_f32(rd, f32::from_bits(bits));
                 } else if funct3 == 3 { // FLD
                     let b0 = mem.read_u32(addr) as u64;
                     let b1 = mem.read_u32(addr + 4) as u64;
-                    self.fregs[rd] = f64::from_bits(b0 | (b1 << 32));
+                    self.write_f64(rd, f64::from_bits(b0 | (b1 << 32)));
                 }
             }
             // F & D Floating Point Stores (opcode=0x27)
@@ -295,10 +330,10 @@ impl Cpu {
                 let sign_ext = ((offset as i32) << 20) >> 20;
                 let addr = self.read_reg(rs1).wrapping_add(sign_ext as u32);
                 if funct3 == 2 { // FSW
-                    let bits = (self.fregs[rs2] as f32).to_bits();
+                    let bits = self.read_f32(rs2).to_bits();
                     mem.write_u32(addr, bits);
                 } else if funct3 == 3 { // FSD
-                    let bits = self.fregs[rs2].to_bits();
+                    let bits = self.read_f64(rs2).to_bits();
                     mem.write_u32(addr, bits as u32);
                     mem.write_u32(addr + 4, (bits >> 32) as u32);
                 }
@@ -310,23 +345,23 @@ impl Cpu {
                 match (fmt, funct5) {
                     // Single precision (.s) fmt == 0
                     (0, 0x00) => { // FADD.S
-                        self.fregs[rd] = ((self.fregs[rs1] as f32) + (self.fregs[rs2] as f32)) as f64;
+                        self.write_f32(rd, self.read_f32(rs1) + self.read_f32(rs2));
                     }
                     (0, 0x01) => { // FSUB.S
-                        self.fregs[rd] = ((self.fregs[rs1] as f32) - (self.fregs[rs2] as f32)) as f64;
+                        self.write_f32(rd, self.read_f32(rs1) - self.read_f32(rs2));
                     }
                     (0, 0x02) => { // FMUL.S
-                        self.fregs[rd] = ((self.fregs[rs1] as f32) * (self.fregs[rs2] as f32)) as f64;
+                        self.write_f32(rd, self.read_f32(rs1) * self.read_f32(rs2));
                     }
                     (0, 0x03) => { // FDIV.S
-                        self.fregs[rd] = ((self.fregs[rs1] as f32) / (self.fregs[rs2] as f32)) as f64;
+                        self.write_f32(rd, self.read_f32(rs1) / self.read_f32(rs2));
                     }
                     (0, 0x0B) => { // FSQRT.S
-                        self.fregs[rd] = (self.fregs[rs1] as f32).sqrt() as f64;
+                        self.write_f32(rd, self.read_f32(rs1).sqrt());
                     }
                     (0, 0x04) => { // FSGNJ / FSGNJN / FSGNJX .S
-                        let s1 = self.fregs[rs1] as f32;
-                        let s2 = self.fregs[rs2] as f32;
+                        let s1 = self.read_f32(rs1);
+                        let s2 = self.read_f32(rs2);
                         let b1 = s1.to_bits();
                         let b2 = s2.to_bits();
                         let res_bits = match funct3 {
@@ -335,20 +370,20 @@ impl Cpu {
                             2 => (b1 & 0x7FFFFFFF) | ((b1 ^ b2) & 0x80000000),  // FSGNJX
                             _ => return Err(format!("Unknown FSGNJ funct3: {}", funct3)),
                         };
-                        self.fregs[rd] = f32::from_bits(res_bits) as f64;
+                        self.write_f32(rd, f32::from_bits(res_bits));
                     }
                     (0, 0x05) => { // FMIN / FMAX .S
-                        let s1 = self.fregs[rs1] as f32;
-                        let s2 = self.fregs[rs2] as f32;
+                        let s1 = self.read_f32(rs1);
+                        let s2 = self.read_f32(rs2);
                         let res = match funct3 {
                             0 => if s1.is_nan() { s2 } else if s2.is_nan() { s1 } else { s1.min(s2) }, // FMIN.S
                             1 => if s1.is_nan() { s2 } else if s2.is_nan() { s1 } else { s1.max(s2) }, // FMAX.S
                             _ => return Err(format!("Unknown FMIN/FMAX funct3: {}", funct3)),
                         };
-                        self.fregs[rd] = res as f64;
+                        self.write_f32(rd, res);
                     }
                     (0, 0x18) => { // FCVT.W.S / FCVT.WU.S
-                        let s = self.fregs[rs1] as f32;
+                        let s = self.read_f32(rs1);
                         let val = if rs2 == 0 { // FCVT.W.S
                             s as i32 as u32
                         } else { // FCVT.WU.S
@@ -363,14 +398,14 @@ impl Cpu {
                         } else { // FCVT.S.WU
                             val as f32
                         };
-                        self.fregs[rd] = s as f64;
+                        self.write_f32(rd, s);
                     }
                     (0, 0x1C) => {
                         if funct3 == 0 { // FMV.X.W
-                            let bits = (self.fregs[rs1] as f32).to_bits();
+                            let bits = self.read_f32(rs1).to_bits();
                             self.write_reg(rd, bits);
                         } else if funct3 == 1 { // FCLASS.S
-                            let s = self.fregs[rs1] as f32;
+                            let s = self.read_f32(rs1);
                             let bits = s.to_bits();
                             let is_neg = (bits & 0x80000000) != 0;
                             let mask = if s.is_infinite() {
@@ -389,11 +424,11 @@ impl Cpu {
                     }
                     (0, 0x1E) => { // FMV.W.X
                         let val = self.read_reg(rs1);
-                        self.fregs[rd] = f32::from_bits(val) as f64;
+                        self.write_f32(rd, f32::from_bits(val));
                     }
                     (0, 0x14) => { // FEQ.S / FLT.S / FLE.S
-                        let s1 = self.fregs[rs1] as f32;
-                        let s2 = self.fregs[rs2] as f32;
+                        let s1 = self.read_f32(rs1);
+                        let s2 = self.read_f32(rs2);
                         let res = match funct3 {
                             0 => if s1 <= s2 { 1 } else { 0 }, // FLE.S
                             1 => if s1 < s2 { 1 } else { 0 },  // FLT.S
@@ -403,30 +438,28 @@ impl Cpu {
                         self.write_reg(rd, res);
                     }
                     (0, 0x08) => { // FCVT.S.D (rs2=1)
-                        self.fregs[rd] = (self.fregs[rs1] as f32) as f64;
+                        self.write_f32(rd, self.read_f64(rs1) as f32);
                     }
 
                     // Double precision (.d) fmt == 1
                     (1, 0x00) => { // FADD.D
-                        self.fregs[rd] = self.fregs[rs1] + self.fregs[rs2];
+                        self.write_f64(rd, self.read_f64(rs1) + self.read_f64(rs2));
                     }
                     (1, 0x01) => { // FSUB.D
-                        self.fregs[rd] = self.fregs[rs1] - self.fregs[rs2];
+                        self.write_f64(rd, self.read_f64(rs1) - self.read_f64(rs2));
                     }
                     (1, 0x02) => { // FMUL.D
-                        self.fregs[rd] = self.fregs[rs1] * self.fregs[rs2];
+                        self.write_f64(rd, self.read_f64(rs1) * self.read_f64(rs2));
                     }
                     (1, 0x03) => { // FDIV.D
-                        self.fregs[rd] = self.fregs[rs1] / self.fregs[rs2];
+                        self.write_f64(rd, self.read_f64(rs1) / self.read_f64(rs2));
                     }
                     (1, 0x0B) => { // FSQRT.D
-                        self.fregs[rd] = self.fregs[rs1].sqrt();
+                        self.write_f64(rd, self.read_f64(rs1).sqrt());
                     }
                     (1, 0x04) => { // FSGNJ / FSGNJN / FSGNJX .D
-                        let d1 = self.fregs[rs1];
-                        let d2 = self.fregs[rs2];
-                        let b1 = d1.to_bits();
-                        let b2 = d2.to_bits();
+                        let b1 = self.fregs[rs1].to_bits();
+                        let b2 = self.fregs[rs2].to_bits();
                         let res_bits = match funct3 {
                             0 => (b1 & 0x7FFFFFFFFFFFFFFF) | (b2 & 0x8000000000000000),        // FSGNJ.D
                             1 => (b1 & 0x7FFFFFFFFFFFFFFF) | ((!b2) & 0x8000000000000000),     // FSGNJN.D
@@ -436,20 +469,20 @@ impl Cpu {
                         self.fregs[rd] = f64::from_bits(res_bits);
                     }
                     (1, 0x05) => { // FMIN / FMAX .D
-                        let d1 = self.fregs[rs1];
-                        let d2 = self.fregs[rs2];
+                        let d1 = self.read_f64(rs1);
+                        let d2 = self.read_f64(rs2);
                         let res = match funct3 {
                             0 => if d1.is_nan() { d2 } else if d2.is_nan() { d1 } else { d1.min(d2) }, // FMIN.D
                             1 => if d1.is_nan() { d2 } else if d2.is_nan() { d1 } else { d1.max(d2) }, // FMAX.D
                             _ => return Err(format!("Unknown FMIN/FMAX.D funct3: {}", funct3)),
                         };
-                        self.fregs[rd] = res;
+                        self.write_f64(rd, res);
                     }
                     (1, 0x08) => { // FCVT.D.S (rs2=0)
-                        self.fregs[rd] = self.fregs[rs1] as f32 as f64;
+                        self.write_f64(rd, self.read_f32(rs1) as f64);
                     }
                     (1, 0x18) => { // FCVT.W.D / FCVT.WU.D
-                        let d = self.fregs[rs1];
+                        let d = self.read_f64(rs1);
                         let val = if rs2 == 0 { // FCVT.W.D
                             d as i32 as u32
                         } else { // FCVT.WU.D
@@ -459,15 +492,16 @@ impl Cpu {
                     }
                     (1, 0x1A) => { // FCVT.D.W / FCVT.D.WU
                         let val = self.read_reg(rs1);
-                        self.fregs[rd] = if rs2 == 0 { // FCVT.D.W
+                        let d = if rs2 == 0 { // FCVT.D.W
                             (val as i32) as f64
                         } else { // FCVT.D.WU
                             val as f64
                         };
+                        self.write_f64(rd, d);
                     }
                     (1, 0x1C) => {
                         if funct3 == 1 { // FCLASS.D
-                            let d = self.fregs[rs1];
+                            let d = self.read_f64(rs1);
                             let bits = d.to_bits();
                             let is_neg = (bits & 0x8000000000000000) != 0;
                             let mask = if d.is_infinite() {
@@ -485,8 +519,8 @@ impl Cpu {
                         }
                     }
                     (1, 0x14) => { // FEQ.D / FLT.D / FLE.D
-                        let d1 = self.fregs[rs1];
-                        let d2 = self.fregs[rs2];
+                        let d1 = self.read_f64(rs1);
+                        let d2 = self.read_f64(rs2);
                         let res = match funct3 {
                             0 => if d1 <= d2 { 1 } else { 0 }, // FLE.D
                             1 => if d1 < d2 { 1 } else { 0 },  // FLT.D
@@ -503,9 +537,9 @@ impl Cpu {
                 let rs3 = ((inst >> 27) & 0x1F) as usize;
                 let fmt = (inst >> 25) & 3;
                 if fmt == 0 { // Single precision .s
-                    let s1 = self.fregs[rs1] as f32;
-                    let s2 = self.fregs[rs2] as f32;
-                    let s3 = self.fregs[rs3] as f32;
+                    let s1 = self.read_f32(rs1);
+                    let s2 = self.read_f32(rs2);
+                    let s3 = self.read_f32(rs3);
                     let res = match opcode {
                         0x43 => (s1 * s2) + s3,    // FMADD.S
                         0x47 => (s1 * s2) - s3,    // FMSUB.S
@@ -513,11 +547,11 @@ impl Cpu {
                         0x4F => -((s1 * s2) + s3), // FNMADD.S
                         _ => unreachable!(),
                     };
-                    self.fregs[rd] = res as f64;
+                    self.write_f32(rd, res);
                 } else if fmt == 1 { // Double precision .d
-                    let d1 = self.fregs[rs1];
-                    let d2 = self.fregs[rs2];
-                    let d3 = self.fregs[rs3];
+                    let d1 = self.read_f64(rs1);
+                    let d2 = self.read_f64(rs2);
+                    let d3 = self.read_f64(rs3);
                     let res = match opcode {
                         0x43 => (d1 * d2) + d3,    // FMADD.D
                         0x47 => (d1 * d2) - d3,    // FMSUB.D
@@ -525,7 +559,7 @@ impl Cpu {
                         0x4F => -((d1 * d2) + d3), // FNMADD.D
                         _ => unreachable!(),
                     };
-                    self.fregs[rd] = res;
+                    self.write_f64(rd, res);
                 } else {
                     return Err(format!("Unsupported FMA fmt: {}", fmt));
                 }
