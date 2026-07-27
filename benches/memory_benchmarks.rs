@@ -44,6 +44,12 @@ pub struct HashMapMemory {
     brk_ptr: u32,
 }
 
+impl Default for HashMapMemory {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl HashMapMemory {
     pub fn new() -> Self {
         Self {

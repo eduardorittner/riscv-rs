@@ -136,25 +136,25 @@ fn run_differential_test(instructions: &[u32]) {
 
     // Initial state definitions
     let mut initial_regs = [0u32; 32];
-    for i in 1..32 {
-        initial_regs[i] = (i as u32) * 0x01010101;
+    for (i, reg) in initial_regs.iter_mut().enumerate().skip(1) {
+        *reg = (i as u32) * 0x01010101;
     }
     initial_regs[10] = 0x10000; // x10 points to valid data memory region
 
     let mut initial_fregs = [0u64; 32];
-    for i in 0..32 {
-        initial_fregs[i] = 0xFFFFFFFF00000000 | (0x3F800000 + (i as u64) * 0x1000);
+    for (i, freg) in initial_fregs.iter_mut().enumerate() {
+        *freg = 0xFFFFFFFF00000000 | (0x3F800000 + (i as u64) * 0x1000);
     }
 
     // 1. Run Rust Emulator
     let mut rust_cpu = Cpu::new();
     let mut rust_mem = Memory::new();
 
-    for i in 1..32 {
-        rust_cpu.write_reg(i, initial_regs[i]);
+    for (i, &reg) in initial_regs.iter().enumerate().skip(1) {
+        rust_cpu.write_reg(i, reg);
     }
-    for i in 0..32 {
-        rust_cpu.fregs[i] = f64::from_bits(initial_fregs[i]);
+    for (i, &freg) in initial_fregs.iter().enumerate() {
+        rust_cpu.fregs[i] = f64::from_bits(freg);
     }
 
     for (i, &inst) in instructions.iter().enumerate() {
@@ -183,11 +183,11 @@ fn run_differential_test(instructions: &[u32]) {
         // Enable FP unit in mstatus.FS (CSR 0x300)
         writeln!(stdin, "poke c 0x300 0x6000").unwrap();
 
-        for i in 1..32 {
-            writeln!(stdin, "poke r x{} {:#x}", i, initial_regs[i]).unwrap();
+        for (i, &reg) in initial_regs.iter().enumerate().skip(1) {
+            writeln!(stdin, "poke r x{} {:#x}", i, reg).unwrap();
         }
-        for i in 0..32 {
-            writeln!(stdin, "poke f f{} {:#x}", i, initial_fregs[i]).unwrap();
+        for (i, &freg) in initial_fregs.iter().enumerate() {
+            writeln!(stdin, "poke f f{} {:#x}", i, freg).unwrap();
         }
 
         writeln!(stdin, "hex {}", hex_path.to_str().unwrap()).unwrap();
@@ -209,7 +209,7 @@ fn run_differential_test(instructions: &[u32]) {
     let stdout_reader = BufReader::new(&output.stdout[..]);
 
     let mut lines_parsed = Vec::new();
-    for line in stdout_reader.lines().flatten() {
+    for line in stdout_reader.lines().map_while(Result::ok) {
         let trimmed = line.trim();
         if trimmed.starts_with("0x") {
             lines_parsed.push(trimmed.to_string());
@@ -242,20 +242,19 @@ fn run_differential_test(instructions: &[u32]) {
         rust_cpu.pc, oracle_pc
     );
 
-    for i in 1..32 {
+    for (i, &oracle_reg) in oracle_regs.iter().enumerate().skip(1) {
         assert_eq!(
             rust_cpu.read_reg(i),
-            oracle_regs[i],
+            oracle_reg,
             "Register x{} mismatch! Rust: {:#010x}, Oracle: {:#010x}",
             i,
             rust_cpu.read_reg(i),
-            oracle_regs[i]
+            oracle_reg
         );
     }
 
-    for i in 0..32 {
+    for (i, &oracle_bits) in oracle_fregs.iter().enumerate() {
         let rust_bits = rust_cpu.fregs[i].to_bits();
-        let oracle_bits = oracle_fregs[i];
         if rust_bits != oracle_bits {
             if (rust_bits >> 32) == 0xFFFFFFFF && (oracle_bits >> 32) == 0xFFFFFFFF {
                 let r_f32 = f32::from_bits(rust_bits as u32);
