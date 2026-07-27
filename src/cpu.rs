@@ -388,13 +388,7 @@ impl Cpu {
                             ((src1 as i32).wrapping_div(src2 as i32)) as u32
                         }
                     } // DIV
-                    (0x01, 5) => {
-                        if let Some(res) = src1.checked_div(src2) {
-                            res
-                        } else {
-                            0xFFFFFFFF
-                        }
-                    } // DIVU
+                    (0x01, 5) => src1.checked_div(src2).unwrap_or(0xFFFFFFFF), // DIVU
                     (0x01, 6) => {
                         if src2 == 0 {
                             src1
