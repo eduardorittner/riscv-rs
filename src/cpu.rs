@@ -205,7 +205,8 @@ impl Cpu {
     }
 
     pub fn execute_inst32<M: MemoryOps>(&mut self, inst: u32, mem: &mut M) -> Result<(), String> {
-        // TODO: replace other arms of the match stmt with const named vars like this
+        // TODO: replace other arms of the match stmt with const named vars like this, for multiple
+        // instructions sharing the same opcode, give the name of the family of instructions
         const LUI: u32 = 0x37;
 
         // TODO: These manual bit shifts are too arcane, can we have something more "declarative",

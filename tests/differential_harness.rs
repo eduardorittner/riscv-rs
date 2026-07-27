@@ -72,7 +72,11 @@ fn ensure_whisper_oracle_built() -> String {
                 "Building vendored libboost_program_options.a failed!"
             );
         }
-        let cxx = "g++ -include cstdint -include optional -include limits";
+        let cxx_base = std::env::var("CXX").unwrap_or_else(|_| "g++".to_string());
+        let cxx = format!(
+            "{} -include cstdint -include optional -include limits",
+            cxx_base
+        );
         println!("Building SweRV-ISS-1 oracle emulator binary...");
         let status = Command::new("make")
             .args([
