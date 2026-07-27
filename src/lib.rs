@@ -33,6 +33,12 @@ pub struct Simulator {
     symbols: HashMap<u32, String>,
 }
 
+impl Default for Simulator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[wasm_bindgen]
 impl Simulator {
     #[wasm_bindgen(constructor)]
@@ -127,7 +133,7 @@ impl Simulator {
                 for sym in &elf.syms {
                     if let Some(name) = elf.strtab.get_at(sym.st_name) {
                         if !name.is_empty() {
-                            let sh_idx = sym.st_shndx as usize;
+                            let sh_idx = sym.st_shndx;
                             let sec_base = if sh_idx < section_addrs.len() {
                                 section_addrs[sh_idx]
                             } else {

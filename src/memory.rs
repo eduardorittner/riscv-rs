@@ -67,6 +67,12 @@ pub struct Memory {
     pub brk_ptr: u32,
 }
 
+impl Default for Memory {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Memory {
     pub fn new() -> Self {
         let mut pages = Vec::with_capacity(65536);

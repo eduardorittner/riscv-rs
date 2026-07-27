@@ -37,6 +37,12 @@ pub struct Cpu {
     pub step_counter: u64,
 }
 
+impl Default for Cpu {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Cpu {
     pub fn new() -> Self {
         let mut cpu = Self {
@@ -593,12 +599,10 @@ impl Cpu {
                                 } else {
                                     1 << 5
                                 }
+                            } else if is_neg {
+                                1 << 1
                             } else {
-                                if is_neg {
-                                    1 << 1
-                                } else {
-                                    1 << 6
-                                }
+                                1 << 6
                             };
                             self.write_reg(rd, mask);
                         }
@@ -761,12 +765,10 @@ impl Cpu {
                                 } else {
                                     1 << 5
                                 }
+                            } else if is_neg {
+                                1 << 1
                             } else {
-                                if is_neg {
-                                    1 << 1
-                                } else {
-                                    1 << 6
-                                }
+                                1 << 6
                             };
                             self.write_reg(rd, mask);
                         }

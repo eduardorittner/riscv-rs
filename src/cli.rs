@@ -32,16 +32,13 @@ impl SimConfig {
                     Self::parse_setreg(&mut config, kv);
                     i += 1;
                 }
-            } else if arg.starts_with("--setreg=") {
-                let kv = &arg[9..];
+            } else if let Some(kv) = arg.strip_prefix("--setreg=") {
                 Self::parse_setreg(&mut config, kv);
             } else if arg == "--interactive" {
                 config.is_interactive = true;
-            } else if !arg.starts_with('-') {
-                if config.binary_path.is_none() {
-                    let cleaned = arg.trim_start_matches('/').trim_start_matches("working/");
-                    config.binary_path = Some(cleaned.to_string());
-                }
+            } else if !arg.starts_with('-') && config.binary_path.is_none() {
+                let cleaned = arg.trim_start_matches('/').trim_start_matches("working/");
+                config.binary_path = Some(cleaned.to_string());
             }
 
             i += 1;
