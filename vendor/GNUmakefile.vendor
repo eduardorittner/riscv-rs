@@ -1,0 +1,49 @@
+# GNUmakefile.vendor — builds libboost_program_options.a from vendored sources.
+#
+# This makefile compiles the Boost.program_options sources vendored under
+# vendor/boost_program_options/src/ against the vendored headers in
+# vendor/boost/ and produces a static library at vendor/stage/lib/.
+#
+# Usage:
+#   make -f vendor/GNUmakefile.vendor
+#
+# The resulting library is consumed by the SweRV-ISS-1 oracle build via
+# BOOST_DIR=<abs path to vendor>.
+
+CXX ?= g++
+AR ?= ar
+RANLIB ?= ranlib
+
+# Directory containing this makefile (vendor/).
+VENDOR_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
+
+# Include path so that <boost/...> resolves to vendor/boost/...
+CPPFLAGS := -I$(VENDOR_DIR) -I$(VENDOR_DIR)/boost_program_options
+CXXFLAGS := -std=c++17 -O3 -g -fPIC -pedantic -Wall -Wextra
+
+# The SweRV-ISS-1 code relies on standard headers being transitively
+# included by older Boost versions. Force-include them so the vendored
+# (newer) Boost headers work without modifying the SweRV submodule.
+FORCE_INCLUDES := -include cstdint -include optional -include limits
+
+PO_SRC_DIR := $(VENDOR_DIR)boost_program_options/src
+PO_SRCS := $(wildcard $(PO_SRC_DIR)/*.cpp)
+PO_OBJS := $(patsubst $(PO_SRC_DIR)/%.cpp,$(VENDOR_DIR)stage/obj/%.o,$(PO_SRCS))
+
+LIB_DIR := $(VENDOR_DIR)stage/lib
+LIB := $(LIB_DIR)/libboost_program_options.a
+
+.PHONY: all clean
+all: $(LIB)
+
+$(LIB): $(PO_OBJS)
+	@mkdir -p $(LIB_DIR)
+	$(AR) cr $@ $^
+	$(RANLIB) $@
+
+$(VENDOR_DIR)stage/obj/%.o: $(PO_SRC_DIR)/%.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(FORCE_INCLUDES) $(CPPFLAGS) $(CXXFLAGS) -c -o $@ $<
+
+clean:
+	rm -rf $(VENDOR_DIR)stage
