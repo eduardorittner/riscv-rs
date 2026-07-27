@@ -3,3 +3,8 @@ local/*
 proptest-regressions
 *.proptest-regressions
 
+# Vendored boost build artifacts (libboost_program_options.a is built on demand)
+vendor/stage/
+SweRV-ISS-1/opt/
+SweRV-ISS-1/dbg/
+

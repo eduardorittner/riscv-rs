@@ -5,11 +5,20 @@ use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 
 fn encode_r(opcode: u32, rd: usize, funct3: u32, rs1: usize, rs2: usize, funct7: u32) -> u32 {
-    (funct7 << 25) | ((rs2 as u32) << 20) | ((rs1 as u32) << 15) | (funct3 << 12) | ((rd as u32) << 7) | opcode
+    (funct7 << 25)
+        | ((rs2 as u32) << 20)
+        | ((rs1 as u32) << 15)
+        | (funct3 << 12)
+        | ((rd as u32) << 7)
+        | opcode
 }
 
 fn encode_i(opcode: u32, rd: usize, funct3: u32, rs1: usize, imm: i32) -> u32 {
-    (((imm as u32) & 0xFFF) << 20) | ((rs1 as u32) << 15) | (funct3 << 12) | ((rd as u32) << 7) | opcode
+    (((imm as u32) & 0xFFF) << 20)
+        | ((rs1 as u32) << 15)
+        | (funct3 << 12)
+        | ((rd as u32) << 7)
+        | opcode
 }
 
 fn encode_s(opcode: u32, funct3: u32, rs1: usize, rs2: usize, imm: i32) -> u32 {
@@ -26,7 +35,15 @@ fn encode_u(opcode: u32, rd: usize, imm: u32) -> u32 {
     (imm & 0xFFFFF000) | ((rd as u32) << 7) | opcode
 }
 
-fn encode_r4(opcode: u32, rd: usize, funct3: u32, rs1: usize, rs2: usize, rs3: usize, fmt: u32) -> u32 {
+fn encode_r4(
+    opcode: u32,
+    rd: usize,
+    funct3: u32,
+    rs1: usize,
+    rs2: usize,
+    rs3: usize,
+    fmt: u32,
+) -> u32 {
     ((rs3 as u32) << 27)
         | (fmt << 25)
         | ((rs2 as u32) << 20)
@@ -39,9 +56,32 @@ fn encode_r4(opcode: u32, rd: usize, funct3: u32, rs1: usize, rs2: usize, rs3: u
 fn ensure_whisper_oracle_built() -> String {
     let oracle_path = std::path::Path::new("SweRV-ISS-1/opt/whisper");
     if !oracle_path.exists() {
+        let vendor_dir = std::path::Path::new("vendor")
+            .canonicalize()
+            .expect("Failed to resolve vendor/ directory");
+        let vendor_dir_str = vendor_dir.to_str().unwrap();
+        let po_lib = vendor_dir.join("stage/lib/libboost_program_options.a");
+        if !po_lib.exists() {
+            println!("Building vendored libboost_program_options.a...");
+            let status = Command::new("make")
+                .args(["-f", "vendor/GNUmakefile.vendor"])
+                .status()
+                .expect("Failed to build vendored boost_program_options");
+            assert!(
+                status.success(),
+                "Building vendored libboost_program_options.a failed!"
+            );
+        }
+        let cxx = "g++ -include cstdint -include optional -include limits";
         println!("Building SweRV-ISS-1 oracle emulator binary...");
         let status = Command::new("make")
-            .args(["-f", "GNUmakefile.wdc", "BOOST_DIR=/opt/homebrew/opt/boost", "opt"])
+            .args([
+                "-f",
+                "GNUmakefile.wdc",
+                &format!("BOOST_DIR={}", vendor_dir_str),
+                "opt",
+            ])
+            .env("CXX", cxx)
             .current_dir("SweRV-ISS-1")
             .status()
             .expect("Failed to execute make in SweRV-ISS-1");
@@ -65,7 +105,12 @@ fn run_differential_test(instructions: &[u32]) {
         writeln!(f, "@00000000").unwrap();
         for &inst in instructions {
             let bytes = inst.to_le_bytes();
-            writeln!(f, "{:02x} {:02x} {:02x} {:02x}", bytes[0], bytes[1], bytes[2], bytes[3]).unwrap();
+            writeln!(
+                f,
+                "{:02x} {:02x} {:02x} {:02x}",
+                bytes[0], bytes[1], bytes[2], bytes[3]
+            )
+            .unwrap();
         }
     }
 
@@ -99,7 +144,9 @@ fn run_differential_test(instructions: &[u32]) {
     rust_cpu.pc = 0;
     for _ in 0..num_insts {
         let inst = rust_mem.read_u32(rust_cpu.pc);
-        rust_cpu.execute_inst(inst, &mut rust_mem).expect("Rust CPU execution error");
+        rust_cpu
+            .execute_inst32(inst, &mut rust_mem)
+            .expect("Rust CPU execution error");
     }
 
     // 2. Run C++ Whisper Oracle
@@ -136,7 +183,9 @@ fn run_differential_test(instructions: &[u32]) {
         writeln!(stdin, "quit").unwrap();
     }
 
-    let output = whisper_proc.wait_with_output().expect("Failed to read whisper stdout");
+    let output = whisper_proc
+        .wait_with_output()
+        .expect("Failed to read whisper stdout");
     let stdout_reader = BufReader::new(&output.stdout[..]);
 
     let mut lines_parsed = Vec::new();
@@ -162,7 +211,8 @@ fn run_differential_test(instructions: &[u32]) {
     }
     let mut oracle_fregs = [0u64; 32];
     for i in 0..32 {
-        oracle_fregs[i] = u64::from_str_radix(lines_parsed[32 + i].trim_start_matches("0x"), 16).unwrap();
+        oracle_fregs[i] =
+            u64::from_str_radix(lines_parsed[32 + i].trim_start_matches("0x"), 16).unwrap();
     }
 
     // 3. Differential State Comparison
@@ -177,7 +227,9 @@ fn run_differential_test(instructions: &[u32]) {
             rust_cpu.read_reg(i),
             oracle_regs[i],
             "Register x{} mismatch! Rust: {:#010x}, Oracle: {:#010x}",
-            i, rust_cpu.read_reg(i), oracle_regs[i]
+            i,
+            rust_cpu.read_reg(i),
+            oracle_regs[i]
         );
     }
 
@@ -207,8 +259,7 @@ fn run_differential_test(instructions: &[u32]) {
                 }
             }
             assert_eq!(
-                rust_bits,
-                oracle_bits,
+                rust_bits, oracle_bits,
                 "FP Register f{} mismatch! Rust: {:#018x}, Oracle: {:#018x}",
                 i, rust_bits, oracle_bits
             );
@@ -231,10 +282,24 @@ fn arb_freg() -> impl Strategy<Value = usize> {
 fn arb_r_type_instruction() -> impl Strategy<Value = u32> {
     (arb_reg(), arb_any_reg(), arb_any_reg(), 0..18usize).prop_map(|(rd, rs1, rs2, op_idx)| {
         let funct3_ops = [
-            (0, 0x00), (0, 0x20), (1, 0x00), (2, 0x00), (3, 0x00), (4, 0x00),
-            (5, 0x00), (5, 0x20), (6, 0x00), (7, 0x00),
-            (0, 0x01), (1, 0x01), (2, 0x01), (3, 0x01), (4, 0x01), (5, 0x01),
-            (6, 0x01), (7, 0x01),
+            (0, 0x00),
+            (0, 0x20),
+            (1, 0x00),
+            (2, 0x00),
+            (3, 0x00),
+            (4, 0x00),
+            (5, 0x00),
+            (5, 0x20),
+            (6, 0x00),
+            (7, 0x00),
+            (0, 0x01),
+            (1, 0x01),
+            (2, 0x01),
+            (3, 0x01),
+            (4, 0x01),
+            (5, 0x01),
+            (6, 0x01),
+            (7, 0x01),
         ];
         let (f3, f7) = funct3_ops[op_idx];
         encode_r(0x33, rd, f3, rs1, rs2, f7)
@@ -242,53 +307,63 @@ fn arb_r_type_instruction() -> impl Strategy<Value = u32> {
 }
 
 fn arb_i_type_instruction() -> impl Strategy<Value = u32> {
-    (arb_reg(), arb_any_reg(), 0..9u32, 0..2048i32).prop_map(|(rd, rs1, op, raw_imm)| {
-        match op {
-            0 => encode_i(0x13, rd, 0, rs1, raw_imm),
-            1 => encode_i(0x13, rd, 2, rs1, raw_imm),
-            2 => encode_i(0x13, rd, 3, rs1, raw_imm),
-            3 => encode_i(0x13, rd, 4, rs1, raw_imm),
-            4 => encode_i(0x13, rd, 6, rs1, raw_imm),
-            5 => encode_i(0x13, rd, 7, rs1, raw_imm),
-            6 => encode_i(0x13, rd, 1, rs1, raw_imm & 0x1F),
-            7 => encode_i(0x13, rd, 5, rs1, raw_imm & 0x1F),
-            _ => encode_i(0x13, rd, 5, rs1, 0x400 | (raw_imm & 0x1F)),
-        }
+    (arb_reg(), arb_any_reg(), 0..9u32, 0..2048i32).prop_map(|(rd, rs1, op, raw_imm)| match op {
+        0 => encode_i(0x13, rd, 0, rs1, raw_imm),
+        1 => encode_i(0x13, rd, 2, rs1, raw_imm),
+        2 => encode_i(0x13, rd, 3, rs1, raw_imm),
+        3 => encode_i(0x13, rd, 4, rs1, raw_imm),
+        4 => encode_i(0x13, rd, 6, rs1, raw_imm),
+        5 => encode_i(0x13, rd, 7, rs1, raw_imm),
+        6 => encode_i(0x13, rd, 1, rs1, raw_imm & 0x1F),
+        7 => encode_i(0x13, rd, 5, rs1, raw_imm & 0x1F),
+        _ => encode_i(0x13, rd, 5, rs1, 0x400 | (raw_imm & 0x1F)),
     })
 }
 
 fn arb_fp_instruction() -> impl Strategy<Value = u32> {
     prop_oneof![
         // Single-Precision FP Compute
-        (arb_freg(), arb_freg(), arb_freg(), 0..5u32, 0..2u32).prop_map(|(frd, frs1, frs2, op, rm)| {
-            match op {
-                0 => encode_r(0x53, frd, 0, frs1, frs2, 0x00),
-                1 => encode_r(0x53, frd, 0, frs1, frs2, 0x04),
-                2 => encode_r(0x53, frd, 0, frs1, frs2, 0x08),
-                3 => encode_r(0x53, frd, 0, frs1, frs2, 0x0C),
-                _ => encode_r(0x53, frd, rm, frs1, frs2, 0x10),
+        (arb_freg(), arb_freg(), arb_freg(), 0..5u32, 0..2u32).prop_map(
+            |(frd, frs1, frs2, op, rm)| {
+                match op {
+                    0 => encode_r(0x53, frd, 0, frs1, frs2, 0x00),
+                    1 => encode_r(0x53, frd, 0, frs1, frs2, 0x04),
+                    2 => encode_r(0x53, frd, 0, frs1, frs2, 0x08),
+                    3 => encode_r(0x53, frd, 0, frs1, frs2, 0x0C),
+                    _ => encode_r(0x53, frd, rm, frs1, frs2, 0x10),
+                }
             }
-        }),
+        ),
         // Double-Precision FP Compute
-        (arb_freg(), arb_freg(), arb_freg(), 0..5u32, 0..2u32).prop_map(|(frd, frs1, frs2, op, rm)| {
-            match op {
-                0 => encode_r(0x53, frd, 0, frs1, frs2, 0x01),
-                1 => encode_r(0x53, frd, 0, frs1, frs2, 0x05),
-                2 => encode_r(0x53, frd, 0, frs1, frs2, 0x09),
-                3 => encode_r(0x53, frd, 0, frs1, frs2, 0x0D),
-                _ => encode_r(0x53, frd, rm, frs1, frs2, 0x11),
+        (arb_freg(), arb_freg(), arb_freg(), 0..5u32, 0..2u32).prop_map(
+            |(frd, frs1, frs2, op, rm)| {
+                match op {
+                    0 => encode_r(0x53, frd, 0, frs1, frs2, 0x01),
+                    1 => encode_r(0x53, frd, 0, frs1, frs2, 0x05),
+                    2 => encode_r(0x53, frd, 0, frs1, frs2, 0x09),
+                    3 => encode_r(0x53, frd, 0, frs1, frs2, 0x0D),
+                    _ => encode_r(0x53, frd, rm, frs1, frs2, 0x11),
+                }
             }
-        }),
+        ),
         // FMA
-        (arb_freg(), arb_freg(), arb_freg(), arb_freg(), 0..4u32, 0..2u32).prop_map(|(frd, frs1, frs2, frs3, op, fmt)| {
-            let opcode = match op {
-                0 => 0x43,
-                1 => 0x47,
-                2 => 0x4B,
-                _ => 0x4F,
-            };
-            encode_r4(opcode, frd, 0, frs1, frs2, frs3, fmt)
-        }),
+        (
+            arb_freg(),
+            arb_freg(),
+            arb_freg(),
+            arb_freg(),
+            0..4u32,
+            0..2u32
+        )
+            .prop_map(|(frd, frs1, frs2, frs3, op, fmt)| {
+                let opcode = match op {
+                    0 => 0x43,
+                    1 => 0x47,
+                    2 => 0x4B,
+                    _ => 0x4F,
+                };
+                encode_r4(opcode, frd, 0, frs1, frs2, frs3, fmt)
+            }),
     ]
 }
 
@@ -302,15 +377,17 @@ fn arb_instruction() -> impl Strategy<Value = u32> {
             encode_u(opcode, rd, imm)
         }),
         arb_fp_instruction(),
-        (arb_reg(), arb_any_reg(), arb_freg(), 0..16i32, 0..4u32).prop_map(|(rd, rs2, frd, offset_idx, op)| {
-            let offset = (offset_idx * 4) & 0x3C;
-            match op {
-                0 => encode_s(0x23, 2, 10, rs2, offset),  // SW
-                1 => encode_i(0x03, rd, 2, 10, offset),   // LW
-                2 => encode_s(0x27, 2, 10, frd, offset),  // FSW
-                _ => encode_i(0x07, frd, 2, 10, offset),  // FLW
+        (arb_reg(), arb_any_reg(), arb_freg(), 0..16i32, 0..4u32).prop_map(
+            |(rd, rs2, frd, offset_idx, op)| {
+                let offset = (offset_idx * 4) & 0x3C;
+                match op {
+                    0 => encode_s(0x23, 2, 10, rs2, offset), // SW
+                    1 => encode_i(0x03, rd, 2, 10, offset),  // LW
+                    2 => encode_s(0x27, 2, 10, frd, offset), // FSW
+                    _ => encode_i(0x07, frd, 2, 10, offset), // FLW
+                }
             }
-        }),
+        ),
     ]
 }
 
