@@ -10,7 +10,9 @@ pub fn handle_ecall<M: MemoryOps>(cpu: &mut Cpu, mem: &mut M) {
     let a3 = cpu.read_reg(13); // Arg 3 in x13/a3
 
     // 1. Try host custom syscall handler first
-    if let Ok(res) = host_imports::custom_syscall(a0 as i32, a1 as i32, a2 as i32, a3 as i32, a7 as i32) {
+    if let Ok(res) =
+        host_imports::custom_syscall(a0 as i32, a1 as i32, a2 as i32, a3 as i32, a7 as i32)
+    {
         if res != 0 {
             cpu.write_reg(10, res as u32);
             return;
@@ -78,4 +80,3 @@ pub fn handle_ecall<M: MemoryOps>(cpu: &mut Cpu, mem: &mut M) {
         }
     }
 }
-

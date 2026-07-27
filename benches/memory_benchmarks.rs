@@ -93,90 +93,111 @@ fn bench_memory_matrix<M: MemoryOps, F: Fn() -> M>(
     // -------------------------------------------------------------
 
     // 1a. Sequential Read Only (bulk bytes)
-    group.bench_function(BenchmarkId::new("sequential/read_only_bulk_64k", impl_name), |b| {
-        let mut mem = create_mem();
-        mem.write_bytes(0x10000, &payload_64k);
-        b.iter(|| {
-            let res = mem.read_bytes(0x10000, 65536);
-            black_box(res)
-        });
-    });
+    group.bench_function(
+        BenchmarkId::new("sequential/read_only_bulk_64k", impl_name),
+        |b| {
+            let mut mem = create_mem();
+            mem.write_bytes(0x10000, &payload_64k);
+            b.iter(|| {
+                let res = mem.read_bytes(0x10000, 65536);
+                black_box(res)
+            });
+        },
+    );
 
     // 1b. Sequential Write Only (bulk bytes)
-    group.bench_function(BenchmarkId::new("sequential/write_only_bulk_64k", impl_name), |b| {
-        let mut mem = create_mem();
-        b.iter(|| {
-            mem.write_bytes(0x10000, black_box(&payload_64k));
-        });
-    });
+    group.bench_function(
+        BenchmarkId::new("sequential/write_only_bulk_64k", impl_name),
+        |b| {
+            let mut mem = create_mem();
+            b.iter(|| {
+                mem.write_bytes(0x10000, black_box(&payload_64k));
+            });
+        },
+    );
 
     // 1c. Sequential Read-Write (bulk bytes)
-    group.bench_function(BenchmarkId::new("sequential/read_write_bulk_64k", impl_name), |b| {
-        let mut mem = create_mem();
-        b.iter(|| {
-            mem.write_bytes(0x10000, black_box(&payload_64k));
-            let res = mem.read_bytes(0x10000, 65536);
-            black_box(res)
-        });
-    });
+    group.bench_function(
+        BenchmarkId::new("sequential/read_write_bulk_64k", impl_name),
+        |b| {
+            let mut mem = create_mem();
+            b.iter(|| {
+                mem.write_bytes(0x10000, black_box(&payload_64k));
+                let res = mem.read_bytes(0x10000, 65536);
+                black_box(res)
+            });
+        },
+    );
 
     // -------------------------------------------------------------
     // Scenario 2: Random Access (Scattered Addresses Across Memory)
     // -------------------------------------------------------------
 
     // 2a. Random Read Only (bulk 256B chunks)
-    group.bench_function(BenchmarkId::new("random/read_only_bulk_256b", impl_name), |b| {
-        let mut mem = create_mem();
-        for &addr in &random_addrs {
-            mem.write_bytes(addr, &payload_256b);
-        }
-        let mut idx = 0;
-        b.iter(|| {
-            let addr = random_addrs[idx % random_addrs.len()];
-            idx += 1;
-            let res = mem.read_bytes(addr, 256);
-            black_box(res)
-        });
-    });
+    group.bench_function(
+        BenchmarkId::new("random/read_only_bulk_256b", impl_name),
+        |b| {
+            let mut mem = create_mem();
+            for &addr in &random_addrs {
+                mem.write_bytes(addr, &payload_256b);
+            }
+            let mut idx = 0;
+            b.iter(|| {
+                let addr = random_addrs[idx % random_addrs.len()];
+                idx += 1;
+                let res = mem.read_bytes(addr, 256);
+                black_box(res)
+            });
+        },
+    );
 
     // 2b. Random Write Only (bulk 256B chunks)
-    group.bench_function(BenchmarkId::new("random/write_only_bulk_256b", impl_name), |b| {
-        let mut mem = create_mem();
-        let mut idx = 0;
-        b.iter(|| {
-            let addr = random_addrs[idx % random_addrs.len()];
-            idx += 1;
-            mem.write_bytes(addr, black_box(&payload_256b));
-        });
-    });
+    group.bench_function(
+        BenchmarkId::new("random/write_only_bulk_256b", impl_name),
+        |b| {
+            let mut mem = create_mem();
+            let mut idx = 0;
+            b.iter(|| {
+                let addr = random_addrs[idx % random_addrs.len()];
+                idx += 1;
+                mem.write_bytes(addr, black_box(&payload_256b));
+            });
+        },
+    );
 
     // 2c. Random Read-Write (bulk 256B chunks)
-    group.bench_function(BenchmarkId::new("random/read_write_bulk_256b", impl_name), |b| {
-        let mut mem = create_mem();
-        let mut idx = 0;
-        b.iter(|| {
-            let addr = random_addrs[idx % random_addrs.len()];
-            idx += 1;
-            mem.write_bytes(addr, black_box(&payload_256b));
-            let res = mem.read_bytes(addr, 256);
-            black_box(res)
-        });
-    });
+    group.bench_function(
+        BenchmarkId::new("random/read_write_bulk_256b", impl_name),
+        |b| {
+            let mut mem = create_mem();
+            let mut idx = 0;
+            b.iter(|| {
+                let addr = random_addrs[idx % random_addrs.len()];
+                idx += 1;
+                mem.write_bytes(addr, black_box(&payload_256b));
+                let res = mem.read_bytes(addr, 256);
+                black_box(res)
+            });
+        },
+    );
 
     // -------------------------------------------------------------
     // Word Accesses (Sequential vs Random)
     // -------------------------------------------------------------
 
-    group.bench_function(BenchmarkId::new("sequential/read_write_u32", impl_name), |b| {
-        let mut mem = create_mem();
-        let mut addr = 0u32;
-        b.iter(|| {
-            mem.write_u32(addr, black_box(0x12345678));
-            let val = mem.read_u32(addr);
-            addr = (addr + 4) % 0x100000;
-            black_box(val)
-        });
-    });
+    group.bench_function(
+        BenchmarkId::new("sequential/read_write_u32", impl_name),
+        |b| {
+            let mut mem = create_mem();
+            let mut addr = 0u32;
+            b.iter(|| {
+                mem.write_u32(addr, black_box(0x12345678));
+                let val = mem.read_u32(addr);
+                addr = (addr + 4) % 0x100000;
+                black_box(val)
+            });
+        },
+    );
 
     group.bench_function(BenchmarkId::new("random/read_write_u32", impl_name), |b| {
         let mut mem = create_mem();

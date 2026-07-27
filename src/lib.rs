@@ -17,9 +17,9 @@ use wasm_bindgen::prelude::*;
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct DebuggerSnapshot {
     pub pc: u32,
-    pub gpr: Vec<u32>,         // 32 GP registers
-    pub fpr: Vec<f64>,         // 32 FP registers
-    pub csrs: Vec<u32>,        // mstatus, mcause, mepc, mtvec, fcsr
+    pub gpr: Vec<u32>,  // 32 GP registers
+    pub fpr: Vec<f64>,  // 32 FP registers
+    pub csrs: Vec<u32>, // mstatus, mcause, mepc, mtvec, fcsr
     pub step_count: u64,
     pub is_halted: bool,
     pub is_breakpoint: bool,
@@ -94,11 +94,18 @@ impl Simulator {
                     let size = shdr.sh_size as usize;
                     let offset = shdr.sh_offset as usize;
 
-                    if size > 0 && (shdr.sh_flags & 2 != 0 || shdr.sh_type == goblin::elf::section_header::SHT_PROGBITS) {
+                    if size > 0
+                        && (shdr.sh_flags & 2 != 0
+                            || shdr.sh_type == goblin::elf::section_header::SHT_PROGBITS)
+                    {
                         let addr = if shdr.sh_addr != 0 {
                             shdr.sh_addr as u32
                         } else {
-                            let align = if shdr.sh_addralign > 0 { shdr.sh_addralign as u32 } else { 4 };
+                            let align = if shdr.sh_addralign > 0 {
+                                shdr.sh_addralign as u32
+                            } else {
+                                4
+                            };
                             current_addr = (current_addr + align - 1) & !(align - 1);
                             let assigned = current_addr;
                             current_addr += size as u32;
@@ -106,7 +113,9 @@ impl Simulator {
                         };
                         section_addrs.push(addr);
 
-                        if shdr.sh_type != goblin::elf::section_header::SHT_NOBITS && offset + size <= binary_bytes.len() {
+                        if shdr.sh_type != goblin::elf::section_header::SHT_NOBITS
+                            && offset + size <= binary_bytes.len()
+                        {
                             let bytes = &binary_bytes[offset..offset + size];
                             self.mem.write_bytes(addr, bytes);
                         }
@@ -119,7 +128,11 @@ impl Simulator {
                     if let Some(name) = elf.strtab.get_at(sym.st_name) {
                         if !name.is_empty() {
                             let sh_idx = sym.st_shndx as usize;
-                            let sec_base = if sh_idx < section_addrs.len() { section_addrs[sh_idx] } else { 0x10000 };
+                            let sec_base = if sh_idx < section_addrs.len() {
+                                section_addrs[sh_idx]
+                            } else {
+                                0x10000
+                            };
                             let addr = sec_base.wrapping_add(sym.st_value as u32);
                             self.symbols.insert(addr, name.to_string());
 
@@ -271,7 +284,8 @@ impl Simulator {
         let mut curr = start_addr;
         while curr < start_addr.saturating_add(len) {
             let inst = self.mem.read_u32(curr);
-            let item = Disassembler::decode_instruction_with_symbols(curr, inst, Some(&self.symbols));
+            let item =
+                Disassembler::decode_instruction_with_symbols(curr, inst, Some(&self.symbols));
             let step = if item.is_compressed { 2 } else { 4 };
             disasm_list.push(item);
             curr = curr.saturating_add(step);

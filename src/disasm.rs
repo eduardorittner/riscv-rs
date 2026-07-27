@@ -12,20 +12,76 @@ pub struct DisassembledInst {
 
 pub fn reg_name(reg: u32) -> &'static str {
     match reg & 0x1f {
-        0 => "zero", 1 => "ra", 2 => "sp", 3 => "gp", 4 => "tp", 5 => "t0", 6 => "t1", 7 => "t2",
-        8 => "s0", 9 => "s1", 10 => "a0", 11 => "a1", 12 => "a2", 13 => "a3", 14 => "a4", 15 => "a5",
-        16 => "a6", 17 => "a7", 18 => "s2", 19 => "s3", 20 => "s4", 21 => "s5", 22 => "s6", 23 => "s7",
-        24 => "s8", 25 => "s9", 26 => "s10", 27 => "s11", 28 => "t3", 29 => "t4", 30 => "t5", 31 => "t6",
+        0 => "zero",
+        1 => "ra",
+        2 => "sp",
+        3 => "gp",
+        4 => "tp",
+        5 => "t0",
+        6 => "t1",
+        7 => "t2",
+        8 => "s0",
+        9 => "s1",
+        10 => "a0",
+        11 => "a1",
+        12 => "a2",
+        13 => "a3",
+        14 => "a4",
+        15 => "a5",
+        16 => "a6",
+        17 => "a7",
+        18 => "s2",
+        19 => "s3",
+        20 => "s4",
+        21 => "s5",
+        22 => "s6",
+        23 => "s7",
+        24 => "s8",
+        25 => "s9",
+        26 => "s10",
+        27 => "s11",
+        28 => "t3",
+        29 => "t4",
+        30 => "t5",
+        31 => "t6",
         _ => "unknown",
     }
 }
 
 pub fn freg_name(reg: u32) -> &'static str {
     match reg & 0x1f {
-        0 => "ft0", 1 => "ft1", 2 => "ft2", 3 => "ft3", 4 => "ft4", 5 => "ft5", 6 => "ft6", 7 => "ft7",
-        8 => "fs0", 9 => "fs1", 10 => "fa0", 11 => "fa1", 12 => "fa2", 13 => "fa3", 14 => "fa4", 15 => "fa5",
-        16 => "fa6", 17 => "fa7", 18 => "fs2", 19 => "fs3", 20 => "fs4", 21 => "fs5", 22 => "fs6", 23 => "fs7",
-        24 => "fs8", 25 => "fs9", 26 => "fs10", 27 => "fs11", 28 => "ft8", 29 => "ft9", 30 => "ft10", 31 => "ft11",
+        0 => "ft0",
+        1 => "ft1",
+        2 => "ft2",
+        3 => "ft3",
+        4 => "ft4",
+        5 => "ft5",
+        6 => "ft6",
+        7 => "ft7",
+        8 => "fs0",
+        9 => "fs1",
+        10 => "fa0",
+        11 => "fa1",
+        12 => "fa2",
+        13 => "fa3",
+        14 => "fa4",
+        15 => "fa5",
+        16 => "fa6",
+        17 => "fa7",
+        18 => "fs2",
+        19 => "fs3",
+        20 => "fs4",
+        21 => "fs5",
+        22 => "fs6",
+        23 => "fs7",
+        24 => "fs8",
+        25 => "fs9",
+        26 => "fs10",
+        27 => "fs11",
+        28 => "ft8",
+        29 => "ft9",
+        30 => "ft10",
+        31 => "ft11",
         _ => "unknown",
     }
 }
@@ -56,7 +112,10 @@ impl Disassembler {
             let half = (opcode & 0xFFFF) as u16;
             (format!("{:04x}", half), Self::decode_rvc(address, half))
         } else {
-            (format!("{:08x}", opcode), Self::decode_rv32(address, opcode, symbols))
+            (
+                format!("{:08x}", opcode),
+                Self::decode_rv32(address, opcode, symbols),
+            )
         };
 
         let label = symbols.and_then(|syms| syms.get(&address).cloned());
@@ -127,10 +186,34 @@ impl Disassembler {
                 let target = address.wrapping_add(sign_ext as u32);
                 let target_str = format_target(target, symbols);
                 let op = match funct3 {
-                    0x0 => if rs2 == 0 { "beqz" } else { "beq" },
-                    0x1 => if rs2 == 0 { "bnez" } else { "bne" },
-                    0x4 => if rs2 == 0 { "bltz" } else { "blt" },
-                    0x5 => if rs2 == 0 { "bgez" } else { "bge" },
+                    0x0 => {
+                        if rs2 == 0 {
+                            "beqz"
+                        } else {
+                            "beq"
+                        }
+                    }
+                    0x1 => {
+                        if rs2 == 0 {
+                            "bnez"
+                        } else {
+                            "bne"
+                        }
+                    }
+                    0x4 => {
+                        if rs2 == 0 {
+                            "bltz"
+                        } else {
+                            "blt"
+                        }
+                    }
+                    0x5 => {
+                        if rs2 == 0 {
+                            "bgez"
+                        } else {
+                            "bge"
+                        }
+                    }
                     0x6 => "bltu",
                     0x7 => "bgeu",
                     _ => "unknown_branch",
@@ -138,7 +221,13 @@ impl Disassembler {
                 if op == "beqz" || op == "bnez" || op == "bltz" || op == "bgez" {
                     format!("{} {}, {}", op, reg_name(rs1), target_str)
                 } else {
-                    format!("{} {}, {}, {}", op, reg_name(rs1), reg_name(rs2), target_str)
+                    format!(
+                        "{} {}, {}, {}",
+                        op,
+                        reg_name(rs1),
+                        reg_name(rs2),
+                        target_str
+                    )
                 }
             }
             // Load
@@ -222,7 +311,13 @@ impl Disassembler {
                     (0x01, 0x7) => "remu",
                     _ => "op_unknown",
                 };
-                format!("{} {}, {}, {}", op, reg_name(rd), reg_name(rs1), reg_name(rs2))
+                format!(
+                    "{} {}, {}, {}",
+                    op,
+                    reg_name(rd),
+                    reg_name(rs1),
+                    reg_name(rs2)
+                )
             }
             // FLW / FSW
             0x07 => {
@@ -268,7 +363,13 @@ impl Disassembler {
             (0x0, 0x0) => "c.addi4spn".to_string(),
             (0x0, 0x2) => "c.lw".to_string(),
             (0x0, 0x6) => "c.sw".to_string(),
-            (0x1, 0x0) => if inst == 0x0001 { "c.nop".to_string() } else { "c.addi".to_string() },
+            (0x1, 0x0) => {
+                if inst == 0x0001 {
+                    "c.nop".to_string()
+                } else {
+                    "c.addi".to_string()
+                }
+            }
             (0x1, 0x1) => "c.jal".to_string(),
             (0x1, 0x2) => "c.li".to_string(),
             (0x1, 0x3) => "c.lui/c.addi16sp".to_string(),
