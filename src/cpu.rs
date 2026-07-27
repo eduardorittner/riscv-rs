@@ -3,6 +3,14 @@ use crate::memory::MemoryOps;
 use crate::syscall::handle_ecall;
 use std::collections::HashMap;
 
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum StepResult {
+    Ok,
+    BreakpointHit(u32),
+    Halted(i32),
+    Trap(u32),
+}
+
 pub struct Cpu {
     pub regs: [u32; 32],
     pub fregs: [f64; 32],
@@ -14,6 +22,9 @@ pub struct Cpu {
     pub exit_code: i32,
     #[allow(dead_code)]
     pub isa_imac: bool,
+    pub debug_enabled: bool,
+    pub breakpoints: std::collections::HashSet<u32>,
+    pub step_counter: u64,
 }
 
 impl Cpu {
@@ -27,10 +38,46 @@ impl Cpu {
             is_halted: false,
             exit_code: 0,
             isa_imac: true,
+            debug_enabled: false,
+            breakpoints: std::collections::HashSet::new(),
+            step_counter: 0,
         };
         // Default Stack Pointer sp (x2) if not set by CLI
         cpu.regs[2] = 0x7FFFFFC;
         cpu
+    }
+
+    #[inline(always)]
+    pub fn step_instruction<M: MemoryOps>(&mut self, mem: &mut M) -> StepResult {
+        if self.debug_enabled && self.breakpoints.contains(&self.pc) {
+            return StepResult::BreakpointHit(self.pc);
+        }
+
+        if self.is_halted {
+            return StepResult::Halted(self.exit_code);
+        }
+
+        let pc = self.pc;
+        let inst16 = mem.read_u16(pc);
+
+        let exec_res = if (inst16 & 0x3) != 0x3 {
+            self.execute_c_inst(inst16, mem)
+        } else {
+            let inst32 = mem.read_u32(pc);
+            self.execute_inst(inst32, mem)
+        };
+
+        self.step_counter += 1;
+
+        if let Err(_err) = exec_res {
+            return StepResult::Trap(pc);
+        }
+
+        if self.is_halted {
+            StepResult::Halted(self.exit_code)
+        } else {
+            StepResult::Ok
+        }
     }
 
     #[inline(always)]
