@@ -389,10 +389,10 @@ impl Cpu {
                         }
                     } // DIV
                     (0x01, 5) => {
-                        if src2 == 0 {
-                            0xFFFFFFFF
+                        if let Some(res) = src1.checked_div(src2) {
+                            res
                         } else {
-                            src1 / src2
+                            0xFFFFFFFF
                         }
                     } // DIVU
                     (0x01, 6) => {
