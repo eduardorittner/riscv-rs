@@ -3,12 +3,9 @@ use rust_whisper::{Cpu, Memory, MemoryOps};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
-use std::sync::Mutex;
+use std::sync::OnceLock;
 
-/// Serializes the oracle/boost build so that parallel test threads don't
-/// race on `make` (which caused a SIGBUS when multiple `ar` processes wrote
-/// to the same `libboost_program_options.a` concurrently).
-static BUILD_LOCK: Mutex<()> = Mutex::new(());
+static ORACLE_BUILD_RESULT: OnceLock<Result<String, String>> = OnceLock::new();
 
 fn encode_r(opcode: u32, rd: usize, funct3: u32, rs1: usize, rs2: usize, funct7: u32) -> u32 {
     (funct7 << 25)
@@ -59,55 +56,73 @@ fn encode_r4(
         | opcode
 }
 
-fn ensure_whisper_oracle_built() -> String {
-    let oracle_path = std::path::Path::new("SweRV-ISS-1/opt/whisper");
-    if !oracle_path.exists() {
-        // Serialize the build across parallel test threads. Without this,
-        // multiple threads can enter the build simultaneously, causing
-        // concurrent `ar`/`make` invocations to race on the same output
-        // files (e.g. libboost_program_options.a), which results in a SIGBUS.
-        let _guard = BUILD_LOCK.lock().unwrap();
+fn ensure_whisper_oracle_built() -> &'static str {
+    let res = ORACLE_BUILD_RESULT.get_or_init(|| {
+        let oracle_path = std::path::Path::new("SweRV-ISS-1/opt/whisper");
+        if oracle_path.exists() {
+            return Ok(oracle_path.to_str().unwrap().to_string());
+        }
 
-        // Re-check after acquiring the lock: another thread may have
-        // already built the oracle while we were waiting.
-        if !oracle_path.exists() {
-            let vendor_dir = std::path::Path::new("vendor")
-                .canonicalize()
-                .expect("Failed to resolve vendor/ directory");
-            let vendor_dir_str = vendor_dir.to_str().unwrap();
-            let po_lib = vendor_dir.join("stage/lib/libboost_program_options.a");
-            if !po_lib.exists() {
-                println!("Building vendored libboost_program_options.a...");
-                let status = Command::new("make")
-                    .args(["-f", "vendor/GNUmakefile.vendor"])
-                    .status()
-                    .expect("Failed to build vendored boost_program_options");
-                assert!(
-                    status.success(),
-                    "Building vendored libboost_program_options.a failed!"
-                );
-            }
-            let cxx_base = std::env::var("CXX").unwrap_or_else(|_| "g++".to_string());
-            let cxx = format!(
-                "{} -include cstdint -include optional -include limits",
-                cxx_base
-            );
-            println!("Building SweRV-ISS-1 oracle emulator binary...");
+        let vendor_dir = match std::path::Path::new("vendor").canonicalize() {
+            Ok(p) => p,
+            Err(e) => return Err(format!("Failed to resolve vendor/ directory: {e}")),
+        };
+        let vendor_dir_str = vendor_dir.to_str().unwrap();
+        let po_lib = vendor_dir.join("stage/lib/libboost_program_options.a");
+        if !po_lib.exists() {
+            println!("Building vendored libboost_program_options.a...");
             let status = Command::new("make")
-                .args([
-                    "-f",
-                    "GNUmakefile.wdc",
-                    &format!("BOOST_DIR={}", vendor_dir_str),
-                    "opt",
-                ])
-                .env("CXX", cxx)
-                .current_dir("SweRV-ISS-1")
-                .status()
-                .expect("Failed to execute make in SweRV-ISS-1");
-            assert!(status.success(), "Building SweRV-ISS-1 failed!");
+                .args(["-f", "vendor/GNUmakefile.vendor"])
+                .status();
+            match status {
+                Ok(s) if s.success() => {}
+                Ok(s) => {
+                    return Err(format!(
+                        "Building vendored libboost_program_options.a failed with status: {s}"
+                    ))
+                }
+                Err(e) => {
+                    return Err(format!("Failed to execute make for vendored boost: {e}"))
+                }
+            }
+        }
+
+        let cxx_base = std::env::var("CXX").unwrap_or_else(|_| "g++".to_string());
+        let cxx = format!(
+            "{} -include cstdint -include optional -include limits -Wno-unknown-warning-option -Wno-invalid-specialization",
+            cxx_base
+        );
+        println!("Building SweRV-ISS-1 oracle emulator binary...");
+        let status = Command::new("make")
+            .args([
+                "-f",
+                "GNUmakefile.wdc",
+                &format!("BOOST_DIR={}", vendor_dir_str),
+                "opt",
+            ])
+            .env("CXX", cxx)
+            .current_dir("SweRV-ISS-1")
+            .status();
+
+        match status {
+            Ok(s) if s.success() => {
+                if oracle_path.exists() {
+                    Ok(oracle_path.to_str().unwrap().to_string())
+                } else {
+                    Err("Make reported success but SweRV-ISS-1/opt/whisper binary was not created".to_string())
+                }
+            }
+            Ok(s) => Err(format!("Building SweRV-ISS-1 oracle emulator failed with exit status: {s}")),
+            Err(e) => Err(format!("Failed to execute make in SweRV-ISS-1: {e}")),
+        }
+    });
+
+    match res {
+        Ok(path) => path.as_str(),
+        Err(err_msg) => {
+            panic!("SweRV-ISS-1 compilation failed: {}\nAborting test.", err_msg);
         }
     }
-    oracle_path.to_str().unwrap().to_string()
 }
 
 fn run_differential_test(instructions: &[u32]) {
