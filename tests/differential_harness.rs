@@ -185,7 +185,7 @@ fn run_differential_test(instructions: &[u32]) {
     }
 
     // 2. Run C++ Whisper Oracle
-    let mut whisper_proc = Command::new(&oracle_bin)
+    let mut whisper_proc = Command::new(oracle_bin)
         .args(["--isa", "imafdc", "--raw", "--interactive"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

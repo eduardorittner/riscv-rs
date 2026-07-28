@@ -90,8 +90,8 @@ fn bench_memory_matrix<M: MemoryOps, F: Fn() -> M>(
     let payload_256b = vec![0xCDu8; 256];
 
     // Pre-generate 1024 deterministic pseudo-random addresses in range [0, 16MB - 64KB]
-    let random_addrs: Vec<u32> = (0..1024)
-        .map(|i| ((i * 2654435761u32) % (16 * 1024 * 1024 - 65536)) & !3)
+    let random_addrs: Vec<u32> = (0..1024u32)
+        .map(|i| (i.wrapping_mul(2654435761) % (16 * 1024 * 1024 - 65536)) & !3)
         .collect();
 
     // -------------------------------------------------------------
