@@ -153,7 +153,10 @@ fn ensure_whisper_oracle_built() -> &'static str {
     match res {
         Ok(path) => path.as_str(),
         Err(err_msg) => {
-            panic!("SweRV-ISS-1 compilation failed: {}\nAborting test.", err_msg);
+            panic!(
+                "SweRV-ISS-1 compilation failed: {}\nAborting test.",
+                err_msg
+            );
         }
     }
 }
