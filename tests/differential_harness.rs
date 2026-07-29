@@ -56,23 +56,56 @@ fn encode_r4(
         | opcode
 }
 
+fn manifest_dir() -> std::path::PathBuf {
+    std::env::var("CARGO_MANIFEST_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::env::current_dir().unwrap())
+}
+
 fn ensure_whisper_oracle_built() -> &'static str {
     let res = ORACLE_BUILD_RESULT.get_or_init(|| {
-        let oracle_path = std::path::Path::new("SweRV-ISS-1/opt/whisper");
+        let base_dir = manifest_dir();
+        let swerv_dir = base_dir.join("SweRV-ISS-1");
+        let makefile_path = swerv_dir.join("GNUmakefile.wdc");
+
+        if !makefile_path.exists() {
+            println!("SweRV-ISS-1 submodule not found or uninitialized. Initializing git submodule...");
+            let _ = Command::new("git")
+                .args(["submodule", "update", "--init", "--recursive"])
+                .current_dir(&base_dir)
+                .status();
+        }
+
+        if !swerv_dir.exists() {
+            return Err(format!(
+                "SweRV-ISS-1 directory does not exist at {}",
+                swerv_dir.display()
+            ));
+        }
+
+        if !makefile_path.exists() {
+            return Err(format!(
+                "SweRV-ISS-1 GNUmakefile.wdc not found at {}",
+                makefile_path.display()
+            ));
+        }
+
+        let oracle_path = swerv_dir.join("opt/whisper");
         if oracle_path.exists() {
             return Ok(oracle_path.to_str().unwrap().to_string());
         }
 
-        let vendor_dir = match std::path::Path::new("vendor").canonicalize() {
-            Ok(p) => p,
-            Err(e) => return Err(format!("Failed to resolve vendor/ directory: {e}")),
-        };
+        let vendor_dir = base_dir.join("vendor");
+        if !vendor_dir.exists() {
+            return Err(format!("vendor directory does not exist at {}", vendor_dir.display()));
+        }
         let vendor_dir_str = vendor_dir.to_str().unwrap();
         let po_lib = vendor_dir.join("stage/lib/libboost_program_options.a");
         if !po_lib.exists() {
             println!("Building vendored libboost_program_options.a...");
             let status = Command::new("make")
                 .args(["-f", "vendor/GNUmakefile.vendor"])
+                .current_dir(&base_dir)
                 .status();
             match status {
                 Ok(s) if s.success() => {}
@@ -101,7 +134,7 @@ fn ensure_whisper_oracle_built() -> &'static str {
                 "opt",
             ])
             .env("CXX", cxx)
-            .current_dir("SweRV-ISS-1")
+            .current_dir(&swerv_dir)
             .status();
 
         match status {
@@ -109,11 +142,11 @@ fn ensure_whisper_oracle_built() -> &'static str {
                 if oracle_path.exists() {
                     Ok(oracle_path.to_str().unwrap().to_string())
                 } else {
-                    Err("Make reported success but SweRV-ISS-1/opt/whisper binary was not created".to_string())
+                    Err(format!("Make reported success but {} was not created", oracle_path.display()))
                 }
             }
             Ok(s) => Err(format!("Building SweRV-ISS-1 oracle emulator failed with exit status: {s}")),
-            Err(e) => Err(format!("Failed to execute make in SweRV-ISS-1: {e}")),
+            Err(e) => Err(format!("Failed to execute make in {}: {e}", swerv_dir.display())),
         }
     });
 
