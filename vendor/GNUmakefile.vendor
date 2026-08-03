@@ -14,7 +14,7 @@ CXX ?= g++
 AR ?= ar
 RANLIB ?= ranlib
 
-# Directory containing this makefile (vendor/).
+# Directory containing this makefile (vendor/), without trailing slash.
 VENDOR_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 
 # Include path so that <boost/...> resolves to vendor/boost/...
@@ -26,11 +26,11 @@ CXXFLAGS := -std=c++17 -O3 -g -fPIC -pedantic -Wall -Wextra -Wno-unknown-warning
 # (newer) Boost headers work without modifying the SweRV submodule.
 FORCE_INCLUDES := -include cstdint -include optional -include limits
 
-PO_SRC_DIR := $(VENDOR_DIR)boost_program_options/src
+PO_SRC_DIR := $(VENDOR_DIR)/boost_program_options/src
 PO_SRCS := $(wildcard $(PO_SRC_DIR)/*.cpp)
-PO_OBJS := $(patsubst $(PO_SRC_DIR)/%.cpp,$(VENDOR_DIR)stage/obj/%.o,$(PO_SRCS))
+PO_OBJS := $(patsubst $(PO_SRC_DIR)/%.cpp,$(VENDOR_DIR)/stage/obj/%.o,$(PO_SRCS))
 
-LIB_DIR := $(VENDOR_DIR)stage/lib
+LIB_DIR := $(VENDOR_DIR)/stage/lib
 LIB := $(LIB_DIR)/libboost_program_options.a
 
 .PHONY: all clean
@@ -41,9 +41,9 @@ $(LIB): $(PO_OBJS)
 	$(AR) cr $@ $^
 	$(RANLIB) $@
 
-$(VENDOR_DIR)stage/obj/%.o: $(PO_SRC_DIR)/%.cpp
+$(VENDOR_DIR)/stage/obj/%.o: $(PO_SRC_DIR)/%.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(FORCE_INCLUDES) $(CPPFLAGS) $(CXXFLAGS) -c -o $@ $<
 
 clean:
-	rm -rf $(VENDOR_DIR)stage
+	rm -rf $(VENDOR_DIR)/stage
