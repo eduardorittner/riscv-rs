@@ -15,10 +15,10 @@ AR ?= ar
 RANLIB ?= ranlib
 
 # Directory containing this makefile (vendor/).
-VENDOR_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
+VENDOR_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 
 # Include path so that <boost/...> resolves to vendor/boost/...
-CPPFLAGS := -I$(VENDOR_DIR) -I$(VENDOR_DIR)/boost_program_options
+CPPFLAGS := -I$(VENDOR_DIR) -I$(VENDOR_DIR)/boost -I$(VENDOR_DIR)/boost_program_options
 CXXFLAGS := -std=c++17 -O3 -g -fPIC -pedantic -Wall -Wextra -Wno-unknown-warning-option -Wno-invalid-specialization
 
 # The SweRV-ISS-1 code relies on standard headers being transitively

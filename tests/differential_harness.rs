@@ -153,10 +153,11 @@ fn ensure_whisper_oracle_built() -> &'static str {
     match res {
         Ok(path) => path.as_str(),
         Err(err_msg) => {
-            panic!(
-                "SweRV-ISS-1 compilation failed: {}\nAborting test.",
+            eprintln!(
+                "SweRV-ISS-1 compilation failed: {}\nAborting test execution immediately.",
                 err_msg
             );
+            std::process::exit(1);
         }
     }
 }
@@ -307,6 +308,11 @@ fn run_differential_test(instructions: &[u32]) {
     for (i, &oracle_bits) in oracle_fregs.iter().enumerate() {
         let rust_bits = rust_cpu.fregs[i].to_bits();
         if rust_bits != oracle_bits {
+            let r_f64 = f64::from_bits(rust_bits);
+            let o_f64 = f64::from_bits(oracle_bits);
+            if r_f64.is_nan() && o_f64.is_nan() {
+                continue;
+            }
             if (rust_bits >> 32) == 0xFFFFFFFF && (oracle_bits >> 32) == 0xFFFFFFFF {
                 let r_f32 = f32::from_bits(rust_bits as u32);
                 let o_f32 = f32::from_bits(oracle_bits as u32);
@@ -318,11 +324,6 @@ fn run_differential_test(instructions: &[u32]) {
                     continue;
                 }
             } else {
-                let r_f64 = f64::from_bits(rust_bits);
-                let o_f64 = f64::from_bits(oracle_bits);
-                if r_f64.is_nan() && o_f64.is_nan() {
-                    continue;
-                }
                 let diff = ((rust_bits as i128) - (oracle_bits as i128)).abs();
                 if (r_f64 - o_f64).abs() < 1e-3 || diff <= 1024 {
                     continue;
