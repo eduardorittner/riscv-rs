@@ -182,6 +182,7 @@ impl Cpu {
                         "CPU Exec Error (Compressed) at PC {:#010x}: {}",
                         pc, e
                     ));
+                    self.is_halted = true;
                     break;
                 }
             } else {
@@ -191,13 +192,16 @@ impl Cpu {
                         "CPU Exec Error at PC {:#010x}: {}",
                         pc, e
                     ));
+                    self.is_halted = true;
                     break;
                 }
             }
 
             inst_counter += 1;
+            self.step_counter += 1;
         }
 
+        self.is_halted = true;
         host_imports::js_sim_stop();
         self.exit_code
     }
