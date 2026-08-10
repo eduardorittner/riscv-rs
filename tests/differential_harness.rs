@@ -90,7 +90,11 @@ fn ensure_whisper_oracle_built() -> &'static str {
             ));
         }
 
-        let oracle_path = swerv_dir.join("opt/whisper");
+        let oracle_path = if swerv_dir.join("opt/whisper.exe").exists() {
+            swerv_dir.join("opt/whisper.exe")
+        } else {
+            swerv_dir.join("opt/whisper")
+        };
         if oracle_path.exists() {
             return Ok(oracle_path.to_str().unwrap().to_string());
         }
@@ -139,6 +143,11 @@ fn ensure_whisper_oracle_built() -> &'static str {
 
         match status {
             Ok(s) if s.success() => {
+                let oracle_path = if swerv_dir.join("opt/whisper.exe").exists() {
+                    swerv_dir.join("opt/whisper.exe")
+                } else {
+                    swerv_dir.join("opt/whisper")
+                };
                 if oracle_path.exists() {
                     Ok(oracle_path.to_str().unwrap().to_string())
                 } else {
