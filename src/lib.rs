@@ -194,23 +194,7 @@ impl Simulator {
     }
 
     pub fn get_snapshot_js(&self, is_breakpoint: bool, hit_address: u32) -> JsValue {
-        let mstatus = *self.cpu.csrs.get(&0x300).unwrap_or(&0);
-        let mcause = *self.cpu.csrs.get(&0x342).unwrap_or(&0);
-        let mepc = *self.cpu.csrs.get(&0x341).unwrap_or(&0);
-        let mtvec = *self.cpu.csrs.get(&0x305).unwrap_or(&0);
-        let fcsr = self.cpu.fcsr;
-
-        let snapshot = DebuggerSnapshot {
-            pc: self.cpu.pc,
-            gpr: self.cpu.regs.to_vec(),
-            fpr: self.cpu.fregs.to_vec(),
-            csrs: vec![mstatus, mcause, mepc, mtvec, fcsr],
-            step_count: self.cpu.step_counter,
-            is_halted: self.cpu.is_halted,
-            is_breakpoint,
-            hit_address,
-        };
-        serde_wasm_bindgen::to_value(&snapshot).unwrap()
+        self.cpu.get_snapshot_js(is_breakpoint, hit_address)
     }
 
     pub fn debug_step(&mut self) -> JsValue {

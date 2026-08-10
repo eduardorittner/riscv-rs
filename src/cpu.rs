@@ -1,6 +1,8 @@
-use crate::host_imports;
+use wasm_bindgen::JsValue;
+
 use crate::memory::MemoryOps;
 use crate::syscall::handle_ecall;
+use crate::{host_imports, DebuggerSnapshot};
 use std::collections::HashMap;
 
 const NAN_F32: u32 = 0x7FC00000;
@@ -202,8 +204,28 @@ impl Cpu {
         }
 
         self.is_halted = true;
-        host_imports::js_sim_stop();
+        host_imports::js_sim_stop(self.get_snapshot_js(false, self.pc));
         self.exit_code
+    }
+
+    pub fn get_snapshot_js(&self, is_breakpoint: bool, hit_address: u32) -> JsValue {
+        let mstatus = *self.csrs.get(&0x300).unwrap_or(&0);
+        let mcause = *self.csrs.get(&0x342).unwrap_or(&0);
+        let mepc = *self.csrs.get(&0x341).unwrap_or(&0);
+        let mtvec = *self.csrs.get(&0x305).unwrap_or(&0);
+        let fcsr = self.fcsr;
+
+        let snapshot = DebuggerSnapshot {
+            pc: self.pc,
+            gpr: self.regs.to_vec(),
+            fpr: self.fregs.to_vec(),
+            csrs: vec![mstatus, mcause, mepc, mtvec, fcsr],
+            step_count: self.step_counter,
+            is_halted: self.is_halted,
+            is_breakpoint,
+            hit_address,
+        };
+        serde_wasm_bindgen::to_value(&snapshot).unwrap()
     }
 
     fn handle_interrupt(&mut self, irq: i32) {

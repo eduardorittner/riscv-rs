@@ -24,7 +24,7 @@ extern "C" {
     pub fn js_write_mmio(addr: u32, size: u32, val: u32);
 
     #[wasm_bindgen(js_name = jsSimStop)]
-    pub fn js_sim_stop();
+    pub fn js_sim_stop(snapshot: JsValue);
 
     #[wasm_bindgen(js_name = readFromStdin)]
     pub fn read_from_stdin(buf_ptr: *mut u8, count: u32) -> i32;
