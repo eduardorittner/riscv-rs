@@ -1,9 +1,9 @@
 pub mod cli;
 pub mod cpu;
 pub mod disasm;
-mod host_imports;
+pub mod host_imports;
 pub mod memory;
-mod syscall;
+pub mod syscall;
 
 use cli::SimConfig;
 pub use cpu::{Cpu, StepResult};

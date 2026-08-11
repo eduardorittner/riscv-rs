@@ -65,6 +65,7 @@ pub trait MemoryOps {
 pub struct Memory {
     pages: Vec<Option<Box<[u8; PAGE_SIZE]>>>,
     pub brk_ptr: u32,
+    pub initial_brk: u32,
 }
 
 impl Default for Memory {
@@ -77,9 +78,11 @@ impl Memory {
     pub fn new() -> Self {
         let mut pages = Vec::with_capacity(65536);
         pages.resize_with(65536, || None);
+        let initial_brk = 0x1000000; // 16 MB default heap start
         Self {
             pages,
-            brk_ptr: 0x1000000, // 16 MB default heap start
+            brk_ptr: initial_brk,
+            initial_brk,
         }
     }
 
@@ -279,7 +282,9 @@ impl MemoryOps for Memory {
     }
 
     fn set_brk(&mut self, val: u32) {
-        self.brk_ptr = val;
+        if val >= self.initial_brk && val < MMIO_BASE {
+            self.brk_ptr = val;
+        }
     }
 }
 

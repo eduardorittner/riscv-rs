@@ -31,7 +31,7 @@ pub fn handle_ecall<M: MemoryOps>(cpu: &mut Cpu, mem: &mut M) {
         64 | 4 => {
             let fd = a0;
             let buf_ptr = a1;
-            let count = a2 as usize;
+            let count = (a2 as usize).min(16 * 1024 * 1024);
             let mut bytes = mem.read_bytes(buf_ptr, count);
             while bytes.last() == Some(&0) {
                 bytes.pop();
@@ -50,10 +50,10 @@ pub fn handle_ecall<M: MemoryOps>(cpu: &mut Cpu, mem: &mut M) {
         63 | 3 => {
             let _fd = a0;
             let buf_ptr = a1;
-            let count = a2;
+            let count = (a2 as usize).min(16 * 1024 * 1024);
 
-            let mut scratch = vec![0u8; count as usize];
-            let bytes_read = host_imports::read_from_stdin(scratch.as_mut_ptr(), count);
+            let mut scratch = vec![0u8; count];
+            let bytes_read = host_imports::read_from_stdin(scratch.as_mut_ptr(), count as u32);
             if bytes_read > 0 {
                 mem.write_bytes(buf_ptr, &scratch[..bytes_read as usize]);
                 cpu.write_reg(10, bytes_read as u32);
