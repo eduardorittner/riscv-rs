@@ -2,14 +2,18 @@ pub mod cli;
 pub mod cpu;
 pub mod disasm;
 pub mod host_imports;
+pub mod inst;
 pub mod memory;
 pub mod syscall;
+pub mod utils;
 
 use cli::SimConfig;
-pub use cpu::{Cpu, StepResult};
+pub use cpu::{Cpu, CpuError, StepResult};
 use disasm::Disassembler;
 use goblin::elf::Elf;
+pub use inst::{DecodedInst16, DecodedInst32};
 pub use memory::{Memory, MemoryOps};
+pub use utils::{shift_then_mask, ShiftThenMask};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use wasm_bindgen::prelude::*;
@@ -289,21 +293,20 @@ impl Simulator {
 }
 
 fn is_call_instruction(inst: u32) -> bool {
-    let opcode = inst & 0x7f;
-    let rd = (inst >> 7) & 0x1f;
     if (inst & 0x3) != 0x3 {
         let op2 = inst & 0x3;
-        let funct3 = (inst >> 13) & 0x7;
+        let funct3 = inst.shift_then_mask(13, 0x7);
         if op2 == 0x1 && funct3 == 0x1 {
             return true; // c.jal
         }
-        if op2 == 0x2 && funct3 == 0x4 && ((inst >> 12) & 1) == 1 {
+        if op2 == 0x2 && funct3 == 0x4 && (inst.shift_then_mask(12, 1) == 1) {
             return true; // c.jalr
         }
         return false;
     }
-    if opcode == 0x6f || opcode == 0x67 {
-        return rd == 1 || rd == 5;
+    let decoded = DecodedInst32::decode(inst);
+    if decoded.opcode == inst::OP_JAL || decoded.opcode == inst::OP_JALR {
+        return decoded.rd == 1 || decoded.rd == 5;
     }
     false
 }

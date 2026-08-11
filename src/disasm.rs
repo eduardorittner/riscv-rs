@@ -1,3 +1,5 @@
+use crate::inst::*;
+use crate::utils::ShiftThenMask;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -129,33 +131,26 @@ impl Disassembler {
         }
     }
 
-    fn decode_rv32(address: u32, inst: u32, symbols: Option<&HashMap<u32, String>>) -> String {
-        let opcode = inst & 0x7f;
-        let rd = (inst >> 7) & 0x1f;
-        let funct3 = (inst >> 12) & 0x7;
-        let rs1 = (inst >> 15) & 0x1f;
-        let rs2 = (inst >> 20) & 0x1f;
-        let funct7 = (inst >> 25) & 0x7f;
+    fn decode_rv32(address: u32, raw_inst: u32, symbols: Option<&HashMap<u32, String>>) -> String {
+        let decoded = DecodedInst32::decode(raw_inst);
+        let rd = decoded.rd as u32;
+        let rs1 = decoded.rs1 as u32;
+        let rs2 = decoded.rs2 as u32;
 
-        match opcode {
+        match decoded.opcode {
             // LUI
-            0x37 => {
-                let imm = ((inst & 0xfffff000) as i32) >> 12;
+            OP_LUI => {
+                let imm = (decoded.u_imm() as i32) >> 12;
                 format!("lui {}, {}", reg_name(rd), imm)
             }
             // AUIPC
-            0x17 => {
-                let imm = ((inst & 0xfffff000) as i32) >> 12;
+            OP_AUIPC => {
+                let imm = (decoded.u_imm() as i32) >> 12;
                 format!("auipc {}, {}", reg_name(rd), imm)
             }
             // JAL
-            0x6f => {
-                let imm20 = (inst >> 31) & 1;
-                let imm10_1 = (inst >> 21) & 0x3ff;
-                let imm11 = (inst >> 20) & 1;
-                let imm19_12 = (inst >> 12) & 0xff;
-                let offset = (imm20 << 20) | (imm19_12 << 12) | (imm11 << 11) | (imm10_1 << 1);
-                let sign_ext = ((offset as i32) << 11) >> 11;
+            OP_JAL => {
+                let sign_ext = decoded.j_imm();
                 let target = address.wrapping_add(sign_ext as u32);
                 let target_str = format_target(target, symbols);
                 if rd == 0 {
@@ -165,8 +160,8 @@ impl Disassembler {
                 }
             }
             // JALR
-            0x67 => {
-                let imm = (inst as i32) >> 20;
+            OP_JALR => {
+                let imm = decoded.i_imm();
                 if rd == 0 && rs1 == 1 && imm == 0 {
                     "ret".to_string()
                 } else if rd == 0 && imm == 0 {
@@ -176,16 +171,11 @@ impl Disassembler {
                 }
             }
             // Branch
-            0x63 => {
-                let imm12 = (inst >> 31) & 1;
-                let imm10_5 = (inst >> 25) & 0x3f;
-                let imm4_1 = (inst >> 8) & 0xf;
-                let imm11 = (inst >> 7) & 1;
-                let offset = (imm12 << 12) | (imm11 << 11) | (imm10_5 << 5) | (imm4_1 << 1);
-                let sign_ext = ((offset as i32) << 19) >> 19;
+            OP_BRANCH => {
+                let sign_ext = decoded.b_imm();
                 let target = address.wrapping_add(sign_ext as u32);
                 let target_str = format_target(target, symbols);
-                let op = match funct3 {
+                let op = match decoded.funct3 {
                     0x0 => {
                         if rs2 == 0 {
                             "beqz"
@@ -231,9 +221,9 @@ impl Disassembler {
                 }
             }
             // Load
-            0x03 => {
-                let imm = (inst as i32) >> 20;
-                let op = match funct3 {
+            OP_LOAD => {
+                let imm = decoded.i_imm();
+                let op = match decoded.funct3 {
                     0x0 => "lb",
                     0x1 => "lh",
                     0x2 => "lw",
@@ -244,11 +234,9 @@ impl Disassembler {
                 format!("{} {}, {}({})", op, reg_name(rd), imm, reg_name(rs1))
             }
             // Store
-            0x23 => {
-                let imm5 = (inst >> 7) & 0x1f;
-                let imm7 = (inst >> 25) & 0x7f;
-                let imm = ((((imm7 << 5) | imm5) as i32) << 20) >> 20;
-                let op = match funct3 {
+            OP_STORE => {
+                let imm = decoded.s_imm();
+                let op = match decoded.funct3 {
                     0x0 => "sb",
                     0x1 => "sh",
                     0x2 => "sw",
@@ -257,12 +245,12 @@ impl Disassembler {
                 format!("{} {}, {}({})", op, reg_name(rs2), imm, reg_name(rs1))
             }
             // OP-IMM
-            0x13 => {
-                let imm = (inst as i32) >> 20;
+            OP_IMM => {
+                let imm = decoded.i_imm();
                 let shamt = rs2;
-                match funct3 {
+                match decoded.funct3 {
                     0x0 => {
-                        if inst == 0x00000013 {
+                        if raw_inst == 0x00000013 {
                             "nop".to_string()
                         } else if rs1 == 0 {
                             format!("li {}, {}", reg_name(rd), imm)
@@ -279,18 +267,18 @@ impl Disassembler {
                     0x7 => format!("andi {}, {}, {}", reg_name(rd), reg_name(rs1), imm),
                     0x1 => format!("slli {}, {}, {}", reg_name(rd), reg_name(rs1), shamt),
                     0x5 => {
-                        if funct7 == 0x20 {
+                        if decoded.funct7 == 0x20 {
                             format!("srai {}, {}, {}", reg_name(rd), reg_name(rs1), shamt)
                         } else {
                             format!("srli {}, {}, {}", reg_name(rd), reg_name(rs1), shamt)
                         }
                     }
-                    _ => format!("op_imm_unknown 0x{:08x}", inst),
+                    _ => format!("op_imm_unknown 0x{:08x}", raw_inst),
                 }
             }
             // OP
-            0x33 => {
-                let op = match (funct7, funct3) {
+            OP_OP => {
+                let op = match (decoded.funct7, decoded.funct3) {
                     (0x00, 0x0) => "add",
                     (0x20, 0x0) => "sub",
                     (0x00, 0x1) => "sll",
@@ -320,27 +308,25 @@ impl Disassembler {
                 )
             }
             // FLW / FSW
-            0x07 => {
-                let imm = (inst as i32) >> 20;
+            OP_LOAD_FP => {
+                let imm = decoded.i_imm();
                 format!("flw {}, {}({})", freg_name(rd), imm, reg_name(rs1))
             }
-            0x27 => {
-                let imm5 = (inst >> 7) & 0x1f;
-                let imm7 = (inst >> 25) & 0x7f;
-                let imm = ((((imm7 << 5) | imm5) as i32) << 20) >> 20;
+            OP_STORE_FP => {
+                let imm = decoded.s_imm();
                 format!("fsw {}, {}({})", freg_name(rs2), imm, reg_name(rs1))
             }
             // SYSTEM
-            0x73 => {
-                if inst == 0x00000073 {
+            OP_SYSTEM => {
+                if raw_inst == 0x00000073 {
                     "ecall".to_string()
-                } else if inst == 0x00100073 {
+                } else if raw_inst == 0x00100073 {
                     "ebreak".to_string()
-                } else if inst == 0x30200073 {
+                } else if raw_inst == 0x30200073 {
                     "mret".to_string()
                 } else {
-                    let csr = inst >> 20;
-                    let op = match funct3 {
+                    let csr = raw_inst >> 20;
+                    let op = match decoded.funct3 {
                         0x1 => "csrrw",
                         0x2 => "csrrs",
                         0x3 => "csrrc",
@@ -352,13 +338,13 @@ impl Disassembler {
                     format!("{} {}, 0x{:x}, {}", op, reg_name(rd), csr, reg_name(rs1))
                 }
             }
-            _ => format!("unimpl 0x{:08x}", inst),
+            _ => format!("unimpl 0x{:08x}", raw_inst),
         }
     }
 
     fn decode_rvc(_address: u32, inst: u16) -> String {
         let op = inst & 0x3;
-        let funct3 = (inst >> 13) & 0x7;
+        let funct3 = inst.shift_then_mask(13, 0x7);
         match (op, funct3) {
             (0x0, 0x0) => "c.addi4spn".to_string(),
             (0x0, 0x2) => "c.lw".to_string(),

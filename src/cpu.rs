@@ -1,7 +1,9 @@
 use wasm_bindgen::JsValue;
 
+use crate::inst::*;
 use crate::memory::MemoryOps;
 use crate::syscall::handle_ecall;
+use crate::utils::ShiftThenMask;
 use crate::{host_imports, DebuggerSnapshot};
 use std::collections::HashMap;
 
@@ -14,6 +16,41 @@ const MEPC: u16 = 0x341;
 const MCAUSE: u16 = 0x341;
 /// Address of the trap-handler's first instruction.
 const MTVEC: u16 = 0x305;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CpuError {
+    IllegalInstruction { pc: u32, raw: u32 },
+    UnknownOpcode { pc: u32, opcode: u8 },
+    UnalignedAccess { pc: u32, addr: u32 },
+    MemoryFault { pc: u32, addr: u32 },
+    UnhandledSyscall { pc: u32, number: i32 },
+    ExecutionError(String),
+}
+
+impl std::fmt::Display for CpuError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::IllegalInstruction { pc, raw } => {
+                write!(f, "Illegal instruction {:#010x} at PC {:#010x}", raw, pc)
+            }
+            Self::UnknownOpcode { pc, opcode } => {
+                write!(f, "Unknown opcode {:#04x} at PC {:#010x}", opcode, pc)
+            }
+            Self::UnalignedAccess { pc, addr } => {
+                write!(f, "Unaligned memory access at {:#010x} (PC {:#010x})", addr, pc)
+            }
+            Self::MemoryFault { pc, addr } => {
+                write!(f, "Memory fault at address {:#010x} (PC {:#010x})", addr, pc)
+            }
+            Self::UnhandledSyscall { pc, number } => {
+                write!(f, "Unhandled syscall {} at PC {:#010x}", number, pc)
+            }
+            Self::ExecutionError(msg) => write!(f, "{}", msg),
+        }
+    }
+}
+
+impl std::error::Error for CpuError {}
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum StepResult {
@@ -138,7 +175,6 @@ impl Cpu {
     #[inline(always)]
     pub fn write_f64(&mut self, reg: usize, val: f64) {
         let res_val = if val.is_nan() {
-            // TODO: why is this NAN value different from NAN_F64 and NAN_F32?
             f64::from_bits(0x7FF8000000000000)
         } else {
             val
@@ -232,389 +268,319 @@ impl Cpu {
         }
     }
 
-    pub fn execute_inst32<M: MemoryOps>(&mut self, inst: u32, mem: &mut M) -> Result<(), String> {
-        // TODO: replace other arms of the match stmt with const named vars like this, for multiple
-        // instructions sharing the same opcode, give the name of the family of instructions
-        const LUI: u32 = 0x37;
-
-        // TODO: These manual bit shifts are too arcane, can we have something more "declarative",
-        // like a struct representing each opcode that can be instatiated from a u32?
-        let opcode = inst & 0x7F;
-        let rd = ((inst >> 7) & 0x1F) as usize;
-        let funct3 = (inst >> 12) & 0x7;
-        let rs1 = ((inst >> 15) & 0x1F) as usize;
-        let rs2 = ((inst >> 20) & 0x1F) as usize;
-        let funct7 = (inst >> 25) & 0x7F;
-
+    #[inline(always)]
+    pub fn execute_inst32<M: MemoryOps>(&mut self, raw: u32, mem: &mut M) -> Result<(), CpuError> {
+        let inst = DecodedInst32::decode(raw);
         let mut next_pc = self.pc.wrapping_add(4);
 
-        match opcode {
-            LUI => {
-                let imm = inst & 0xFFFFF000;
-                self.write_reg(rd, imm);
-            }
-            // AUIPC
-            0x17 => {
-                let imm = inst & 0xFFFFF000;
-                self.write_reg(rd, self.pc.wrapping_add(imm));
-            }
-            // JAL
-            0x6F => {
-                let imm20 = (inst >> 31) & 1;
-                let imm10_1 = (inst >> 21) & 0x3FF;
-                let imm11 = (inst >> 20) & 1;
-                let imm19_12 = (inst >> 12) & 0xFF;
-                let offset = (imm20 << 20) | (imm19_12 << 12) | (imm11 << 11) | (imm10_1 << 1);
-                let sign_ext = ((offset as i32) << 11) >> 11;
-                self.write_reg(rd, next_pc);
-                next_pc = self.pc.wrapping_add(sign_ext as u32);
-            }
-            // JALR
-            0x67 => {
-                let imm = (inst as i32) >> 20;
-                let target = (self.read_reg(rs1).wrapping_add(imm as u32)) & !1;
-                self.write_reg(rd, next_pc);
-                next_pc = target;
-            }
-            // Branch B-type
-            0x63 => {
-                let imm12 = (inst >> 31) & 1;
-                let imm10_5 = (inst >> 25) & 0x3F;
-                let imm4_1 = (inst >> 8) & 0xF;
-                let imm11 = (inst >> 7) & 1;
-                let offset = (imm12 << 12) | (imm11 << 11) | (imm10_5 << 5) | (imm4_1 << 1);
-                let sign_ext = ((offset as i32) << 19) >> 19;
-
-                let src1 = self.read_reg(rs1);
-                let src2 = self.read_reg(rs2);
-                let take_branch = match funct3 {
-                    0 => src1 == src2,                   // BEQ
-                    1 => src1 != src2,                   // BNE
-                    4 => (src1 as i32) < (src2 as i32),  // BLT
-                    5 => (src1 as i32) >= (src2 as i32), // BGE
-                    6 => src1 < src2,                    // BLTU
-                    7 => src1 >= src2,                   // BGEU
-                    _ => return Err(format!("Unknown branch funct3: {}", funct3)),
-                };
-                if take_branch {
-                    next_pc = self.pc.wrapping_add(sign_ext as u32);
+        match inst.opcode {
+            OP_LUI
+            | OP_AUIPC
+            | OP_JAL
+            | OP_JALR
+            | OP_BRANCH
+            | OP_LOAD
+            | OP_STORE
+            | OP_IMM
+            | OP_OP
+            | OP_MISC_MEM => {
+                if inst.opcode == OP_OP && inst.funct7 == 0x01 {
+                    self.exec_rv32m(&inst, mem)?;
+                } else {
+                    self.exec_rv32i(&inst, mem, &mut next_pc)?;
                 }
             }
-            // Load I-type
-            0x03 => {
-                let imm = (inst as i32) >> 20;
-                let addr = self.read_reg(rs1).wrapping_add(imm as u32);
-                let val = match funct3 {
-                    0 => (mem.read_u8(addr) as i8) as i32 as u32,   // LB
-                    1 => (mem.read_u16(addr) as i16) as i32 as u32, // LH
-                    2 => mem.read_u32(addr),                        // LW
-                    4 => mem.read_u8(addr) as u32,                  // LBU
-                    5 => mem.read_u16(addr) as u32,                 // LHU
-                    _ => return Err(format!("Unknown load funct3: {}", funct3)),
-                };
-                self.write_reg(rd, val);
+            OP_AMO => self.exec_rv32a(&inst, mem)?,
+            OP_LOAD_FP | OP_STORE_FP | OP_MADD | OP_MSUB | OP_NMSUB | OP_NMADD | OP_OP_FP => {
+                self.exec_rv32fd(&inst, mem)?;
             }
-            // Store S-type
-            0x23 => {
-                let imm11_5 = (inst >> 25) & 0x7F;
-                let imm4_0 = (inst >> 7) & 0x1F;
-                let offset = (imm11_5 << 5) | imm4_0;
-                let sign_ext = ((offset as i32) << 20) >> 20;
-                let addr = self.read_reg(rs1).wrapping_add(sign_ext as u32);
-                let val = self.read_reg(rs2);
-                match funct3 {
+            OP_SYSTEM => self.exec_csr(&inst, mem, &mut next_pc)?,
+            _ => return Err(CpuError::UnknownOpcode { pc: self.pc, opcode: inst.opcode }),
+        }
+
+        self.pc = next_pc;
+        Ok(())
+    }
+
+    #[inline(always)]
+    fn exec_rv32i<M: MemoryOps>(
+        &mut self,
+        inst: &DecodedInst32,
+        mem: &mut M,
+        next_pc: &mut u32,
+    ) -> Result<(), CpuError> {
+        match inst.opcode {
+            OP_LUI => {
+                self.write_reg(inst.rd, inst.u_imm());
+            }
+            OP_AUIPC => {
+                self.write_reg(inst.rd, self.pc.wrapping_add(inst.u_imm()));
+            }
+            OP_JAL => {
+                self.write_reg(inst.rd, *next_pc);
+                *next_pc = self.pc.wrapping_add(inst.j_imm() as u32);
+            }
+            OP_JALR => {
+                let target = (self.read_reg(inst.rs1).wrapping_add(inst.i_imm() as u32)) & !1;
+                self.write_reg(inst.rd, *next_pc);
+                *next_pc = target;
+            }
+            OP_BRANCH => {
+                let src1 = self.read_reg(inst.rs1);
+                let src2 = self.read_reg(inst.rs2);
+                let take = match inst.funct3 {
+                    0 => src1 == src2,
+                    1 => src1 != src2,
+                    4 => (src1 as i32) < (src2 as i32),
+                    5 => (src1 as i32) >= (src2 as i32),
+                    6 => src1 < src2,
+                    7 => src1 >= src2,
+                    _ => return Err(CpuError::IllegalInstruction { pc: self.pc, raw: inst.raw }),
+                };
+                if take {
+                    *next_pc = self.pc.wrapping_add(inst.b_imm() as u32);
+                }
+            }
+            OP_LOAD => {
+                let addr = self.read_reg(inst.rs1).wrapping_add(inst.i_imm() as u32);
+                let val = match inst.funct3 {
+                    0 => (mem.read_u8(addr) as i8 as i32) as u32,
+                    1 => (mem.read_u16(addr) as i16 as i32) as u32,
+                    2 => mem.read_u32(addr),
+                    4 => mem.read_u8(addr) as u32,
+                    5 => mem.read_u16(addr) as u32,
+                    _ => return Err(CpuError::IllegalInstruction { pc: self.pc, raw: inst.raw }),
+                };
+                self.write_reg(inst.rd, val);
+            }
+            OP_STORE => {
+                let addr = self.read_reg(inst.rs1).wrapping_add(inst.s_imm() as u32);
+                let val = self.read_reg(inst.rs2);
+                match inst.funct3 {
                     0 => mem.write_u8(addr, val as u8),
                     1 => mem.write_u16(addr, val as u16),
                     2 => mem.write_u32(addr, val),
-                    _ => return Err(format!("Unknown store funct3: {}", funct3)),
+                    _ => return Err(CpuError::IllegalInstruction { pc: self.pc, raw: inst.raw }),
                 }
             }
-            // OP-IMM (I-type)
-            0x13 => {
-                let imm = (inst as i32) >> 20;
-                let src1 = self.read_reg(rs1);
-                let shamt = (inst >> 20) & 0x1F;
-                let val = match funct3 {
-                    0 => src1.wrapping_add(imm as u32), // ADDI
-                    2 => {
-                        if (src1 as i32) < imm {
-                            1
-                        } else {
-                            0
-                        }
-                    } // SLTI
-                    3 => {
-                        if src1 < (imm as u32) {
-                            1
-                        } else {
-                            0
-                        }
-                    } // SLTIU
-                    4 => src1 ^ (imm as u32),           // XORI
-                    6 => src1 | (imm as u32),           // ORI
-                    7 => src1 & (imm as u32),           // ANDI
-                    1 => src1 << shamt,                 // SLLI
+            OP_IMM => {
+                let src1 = self.read_reg(inst.rs1);
+                let imm = inst.i_imm();
+                let shamt = (inst.rs2 & 0x1F) as u32;
+                let val = match inst.funct3 {
+                    0 => src1.wrapping_add(imm as u32),
+                    2 => if (src1 as i32) < imm { 1 } else { 0 },
+                    3 => if src1 < (imm as u32) { 1 } else { 0 },
+                    4 => src1 ^ (imm as u32),
+                    6 => src1 | (imm as u32),
+                    7 => src1 & (imm as u32),
+                    1 => src1 << shamt,
                     5 => {
-                        if (inst >> 30) & 1 == 1 {
-                            // SRAI / SRLI
+                        if inst.funct7 == 0x20 {
                             ((src1 as i32) >> shamt) as u32
                         } else {
                             src1 >> shamt
                         }
                     }
-                    _ => return Err(format!("Unknown OP-IMM funct3: {}", funct3)),
+                    _ => return Err(CpuError::IllegalInstruction { pc: self.pc, raw: inst.raw }),
                 };
-                self.write_reg(rd, val);
+                self.write_reg(inst.rd, val);
             }
-            // OP (R-type)
-            0x33 => {
-                let src1 = self.read_reg(rs1);
-                let src2 = self.read_reg(rs2);
-                let val = match (funct7, funct3) {
-                    (0x00, 0) => src1.wrapping_add(src2), // ADD
-                    (0x20, 0) => src1.wrapping_sub(src2), // SUB
-                    (0x00, 1) => src1 << (src2 & 0x1F),   // SLL
-                    (0x00, 2) => {
-                        if (src1 as i32) < (src2 as i32) {
-                            1
-                        } else {
-                            0
-                        }
-                    } // SLT
-                    (0x00, 3) => {
-                        if src1 < src2 {
-                            1
-                        } else {
-                            0
-                        }
-                    } // SLTU
-                    (0x00, 4) => src1 ^ src2,             // XOR
-                    (0x00, 5) => src1 >> (src2 & 0x1F),   // SRL
-                    (0x20, 5) => ((src1 as i32) >> (src2 & 0x1F)) as u32, // SRA
-                    (0x00, 6) => src1 | src2,             // OR
-                    (0x00, 7) => src1 & src2,             // AND
+            OP_OP => {
+                let src1 = self.read_reg(inst.rs1);
+                let src2 = self.read_reg(inst.rs2);
+                let val = match (inst.funct7, inst.funct3) {
+                    (0x00, 0) => src1.wrapping_add(src2),
+                    (0x20, 0) => src1.wrapping_sub(src2),
+                    (0x00, 1) => src1 << (src2 & 0x1F),
+                    (0x00, 2) => if (src1 as i32) < (src2 as i32) { 1 } else { 0 },
+                    (0x00, 3) => if src1 < src2 { 1 } else { 0 },
+                    (0x00, 4) => src1 ^ src2,
+                    (0x00, 5) => src1 >> (src2 & 0x1F),
+                    (0x20, 5) => ((src1 as i32) >> (src2 & 0x1F)) as u32,
+                    (0x00, 6) => src1 | src2,
+                    (0x00, 7) => src1 & src2,
+                    _ => return Err(CpuError::IllegalInstruction { pc: self.pc, raw: inst.raw }),
+                };
+                self.write_reg(inst.rd, val);
+            }
+            OP_MISC_MEM => {}
+            _ => return Err(CpuError::IllegalInstruction { pc: self.pc, raw: inst.raw }),
+        }
+        Ok(())
+    }
 
-                    // M Extension
-                    (0x01, 0) => src1.wrapping_mul(src2), // MUL
-                    (0x01, 1) => {
-                        (((src1 as i32 as i64 * src2 as i32 as i64) >> 32) & 0xFFFFFFFF) as u32
-                    } // MULH
-                    (0x01, 2) => {
-                        (((src1 as i32 as i64 * src2 as u64 as i64) >> 32) & 0xFFFFFFFF) as u32
-                    } // MULHSU
-                    (0x01, 3) => (((src1 as u64 * src2 as u64) >> 32) & 0xFFFFFFFF) as u32, // MULHU
-                    (0x01, 4) => {
-                        if src2 == 0 {
-                            0xFFFFFFFF
-                        } else {
-                            ((src1 as i32).wrapping_div(src2 as i32)) as u32
-                        }
-                    } // DIV
-                    (0x01, 5) => src1.checked_div(src2).unwrap_or(0xFFFFFFFF), // DIVU
-                    (0x01, 6) => {
-                        if src2 == 0 {
-                            src1
-                        } else {
-                            ((src1 as i32).wrapping_rem(src2 as i32)) as u32
-                        }
-                    } // REM
-                    (0x01, 7) => {
-                        if src2 == 0 {
-                            src1
-                        } else {
-                            src1 % src2
-                        }
-                    } // REMU
-
-                    _ => return Err(format!("Unknown OP funct7={:#x} funct3={}", funct7, funct3)),
-                };
-                self.write_reg(rd, val);
-            }
-            // Atomic A Extension (opcode=0x2F)
-            0x2F => {
-                let funct5 = funct7 >> 2;
-                let addr = self.read_reg(rs1);
-                let src2 = self.read_reg(rs2);
-                let old_val = mem.read_u32(addr);
-                let mut rd_val = old_val;
-                let new_val = match funct5 {
-                    0x02 => old_val, // LR.W
-                    0x03 => {
-                        rd_val = 0;
-                        src2
-                    } // SC.W
-                    0x01 => src2,    // AMOSWAP.W
-                    0x00 => old_val.wrapping_add(src2), // AMOADD.W
-                    0x04 => old_val ^ src2, // AMOXOR.W
-                    0x0C => old_val & src2, // AMOAND.W
-                    0x08 => old_val | src2, // AMOOR.W
-                    0x10 => std::cmp::min(old_val as i32, src2 as i32) as u32, // AMOMIN.W
-                    0x14 => std::cmp::max(old_val as i32, src2 as i32) as u32, // AMOMAX.W
-                    0x18 => std::cmp::min(old_val, src2), // AMOMINU.W
-                    0x1C => std::cmp::max(old_val, src2), // AMOMAXU.W
-                    _ => return Err(format!("Unknown Atomic funct5: {:#x}", funct5)),
-                };
-                mem.write_u32(addr, new_val);
-                self.write_reg(rd, rd_val);
-            }
-            // F & D Floating Point Loads (opcode=0x07)
-            0x07 => {
-                let imm = (inst as i32) >> 20;
-                let addr = self.read_reg(rs1).wrapping_add(imm as u32);
-                if funct3 == 2 {
-                    // FLW
-                    let bits = mem.read_u32(addr);
-                    self.write_f32(rd, f32::from_bits(bits));
-                } else if funct3 == 3 {
-                    // FLD
-                    let b0 = mem.read_u32(addr) as u64;
-                    let b1 = mem.read_u32(addr + 4) as u64;
-                    self.write_f64(rd, f64::from_bits(b0 | (b1 << 32)));
+    #[inline(always)]
+    fn exec_rv32m<M: MemoryOps>(
+        &mut self,
+        inst: &DecodedInst32,
+        _mem: &mut M,
+    ) -> Result<(), CpuError> {
+        let src1 = self.read_reg(inst.rs1);
+        let src2 = self.read_reg(inst.rs2);
+        let val = match inst.funct3 {
+            0 => src1.wrapping_mul(src2),
+            1 => (((src1 as i32 as i64 * src2 as i32 as i64) >> 32) & 0xFFFFFFFF) as u32,
+            2 => (((src1 as i32 as i64 * src2 as u64 as i64) >> 32) & 0xFFFFFFFF) as u32,
+            3 => (((src1 as u64 * src2 as u64) >> 32) & 0xFFFFFFFF) as u32,
+            4 => {
+                if src2 == 0 {
+                    0xFFFFFFFF
+                } else {
+                    ((src1 as i32).wrapping_div(src2 as i32)) as u32
                 }
             }
-            // F & D Floating Point Stores (opcode=0x27)
-            0x27 => {
-                let imm11_5 = (inst >> 25) & 0x7F;
-                let imm4_0 = (inst >> 7) & 0x1F;
-                let offset = (imm11_5 << 5) | imm4_0;
-                let sign_ext = ((offset as i32) << 20) >> 20;
-                let addr = self.read_reg(rs1).wrapping_add(sign_ext as u32);
+            5 => src1.checked_div(src2).unwrap_or(0xFFFFFFFF),
+            6 => {
+                if src2 == 0 {
+                    src1
+                } else {
+                    ((src1 as i32).wrapping_rem(src2 as i32)) as u32
+                }
+            }
+            7 => {
+                if src2 == 0 {
+                    src1
+                } else {
+                    src1 % src2
+                }
+            }
+            _ => return Err(CpuError::IllegalInstruction { pc: self.pc, raw: inst.raw }),
+        };
+        self.write_reg(inst.rd, val);
+        Ok(())
+    }
+
+    #[inline(always)]
+    fn exec_rv32a<M: MemoryOps>(
+        &mut self,
+        inst: &DecodedInst32,
+        mem: &mut M,
+    ) -> Result<(), CpuError> {
+        let funct5 = inst.funct7 >> 2;
+        let addr = self.read_reg(inst.rs1);
+        let src2 = self.read_reg(inst.rs2);
+        let old_val = mem.read_u32(addr);
+        let mut rd_val = old_val;
+        let new_val = match funct5 {
+            0x02 => old_val, // LR.W
+            0x03 => {
+                rd_val = 0;
+                src2
+            } // SC.W
+            0x01 => src2,                       // AMOSWAP.W
+            0x00 => old_val.wrapping_add(src2), // AMOADD.W
+            0x04 => old_val ^ src2,             // AMOXOR.W
+            0x0C => old_val & src2,             // AMOAND.W
+            0x08 => old_val | src2,             // AMOOR.W
+            0x10 => (old_val as i32).min(src2 as i32) as u32, // AMOMIN.W
+            0x14 => (old_val as i32).max(src2 as i32) as u32, // AMOMAX.W
+            0x18 => old_val.min(src2),          // AMOMINU.W
+            0x1C => old_val.max(src2),          // AMOMAXU.W
+            _ => return Err(CpuError::IllegalInstruction { pc: self.pc, raw: inst.raw }),
+        };
+        if funct5 != 0x02 {
+            mem.write_u32(addr, new_val);
+        }
+        self.write_reg(inst.rd, rd_val);
+        Ok(())
+    }
+
+    #[inline(always)]
+    fn exec_rv32fd<M: MemoryOps>(
+        &mut self,
+        inst: &DecodedInst32,
+        mem: &mut M,
+    ) -> Result<(), CpuError> {
+        let rd = inst.rd;
+        let rs1 = inst.rs1;
+        let rs2 = inst.rs2;
+        let funct3 = inst.funct3;
+
+        match inst.opcode {
+            OP_LOAD_FP => {
+                let addr = self.read_reg(rs1).wrapping_add(inst.i_imm() as u32);
                 if funct3 == 2 {
-                    // FSW
+                    self.write_f32(rd, f32::from_bits(mem.read_u32(addr)));
+                } else if funct3 == 3 {
+                    let low = mem.read_u32(addr) as u64;
+                    let high = mem.read_u32(addr + 4) as u64;
+                    self.write_f64(rd, f64::from_bits((high << 32) | low));
+                } else {
+                    return Err(CpuError::IllegalInstruction { pc: self.pc, raw: inst.raw });
+                }
+            }
+            OP_STORE_FP => {
+                let addr = self.read_reg(rs1).wrapping_add(inst.s_imm() as u32);
+                if funct3 == 2 {
                     let bits = self.read_f32(rs2).to_bits();
                     mem.write_u32(addr, bits);
                 } else if funct3 == 3 {
-                    // FSD
                     let bits = self.read_f64(rs2).to_bits();
                     mem.write_u32(addr, bits as u32);
                     mem.write_u32(addr + 4, (bits >> 32) as u32);
+                } else {
+                    return Err(CpuError::IllegalInstruction { pc: self.pc, raw: inst.raw });
                 }
             }
-            // OP-FP Floating Point Compute (opcode=0x53)
-            0x53 => {
-                let fmt = funct7 & 0x3;
-                let funct5 = funct7 >> 2;
+            OP_OP_FP => {
+                let fmt = inst.funct7 & 0x3;
+                let funct5 = inst.funct7 >> 2;
                 match (fmt, funct5) {
-                    // Single precision (.s) fmt == 0
-                    (0, 0x00) => {
-                        // FADD.S
-                        self.write_f32(rd, self.read_f32(rs1) + self.read_f32(rs2));
-                    }
-                    (0, 0x01) => {
-                        // FSUB.S
-                        self.write_f32(rd, self.read_f32(rs1) - self.read_f32(rs2));
-                    }
-                    (0, 0x02) => {
-                        // FMUL.S
-                        self.write_f32(rd, self.read_f32(rs1) * self.read_f32(rs2));
-                    }
-                    (0, 0x03) => {
-                        // FDIV.S
-                        self.write_f32(rd, self.read_f32(rs1) / self.read_f32(rs2));
-                    }
-                    (0, 0x0B) => {
-                        // FSQRT.S
-                        self.write_f32(rd, self.read_f32(rs1).sqrt());
-                    }
+                    (0, 0x00) => self.write_f32(rd, self.read_f32(rs1) + self.read_f32(rs2)),
+                    (0, 0x01) => self.write_f32(rd, self.read_f32(rs1) - self.read_f32(rs2)),
+                    (0, 0x02) => self.write_f32(rd, self.read_f32(rs1) * self.read_f32(rs2)),
+                    (0, 0x03) => self.write_f32(rd, self.read_f32(rs1) / self.read_f32(rs2)),
+                    (0, 0x0B) => self.write_f32(rd, self.read_f32(rs1).sqrt()),
                     (0, 0x04) => {
-                        // FSGNJ / FSGNJN / FSGNJX .S
                         let s1 = self.read_f32(rs1);
                         let s2 = self.read_f32(rs2);
                         let b1 = s1.to_bits();
                         let b2 = s2.to_bits();
                         let res_bits = match funct3 {
-                            0 => (b1 & 0x7FFFFFFF) | (b2 & 0x80000000),    // FSGNJ
-                            1 => (b1 & 0x7FFFFFFF) | ((!b2) & 0x80000000), // FSGNJN
-                            2 => (b1 & 0x7FFFFFFF) | ((b1 ^ b2) & 0x80000000), // FSGNJX
-                            _ => return Err(format!("Unknown FSGNJ funct3: {}", funct3)),
+                            0 => (b1 & 0x7FFFFFFF) | (b2 & 0x80000000),
+                            1 => (b1 & 0x7FFFFFFF) | ((!b2) & 0x80000000),
+                            2 => (b1 & 0x7FFFFFFF) | ((b1 ^ b2) & 0x80000000),
+                            _ => return Err(CpuError::IllegalInstruction { pc: self.pc, raw: inst.raw }),
                         };
                         self.fregs[rd] = f64::from_bits(0xFFFFFFFF00000000u64 | (res_bits as u64));
                     }
                     (0, 0x05) => {
-                        // FMIN / FMAX .S
                         let s1 = self.read_f32(rs1);
                         let s2 = self.read_f32(rs2);
                         let res = match funct3 {
-                            0 => {
-                                if s1.is_nan() {
-                                    s2
-                                } else if s2.is_nan() {
-                                    s1
-                                } else {
-                                    s1.min(s2)
-                                }
-                            } // FMIN.S
-                            1 => {
-                                if s1.is_nan() {
-                                    s2
-                                } else if s2.is_nan() {
-                                    s1
-                                } else {
-                                    s1.max(s2)
-                                }
-                            } // FMAX.S
-                            _ => return Err(format!("Unknown FMIN/FMAX funct3: {}", funct3)),
+                            0 => if s1.is_nan() { s2 } else if s2.is_nan() { s1 } else { s1.min(s2) },
+                            1 => if s1.is_nan() { s2 } else if s2.is_nan() { s1 } else { s1.max(s2) },
+                            _ => return Err(CpuError::IllegalInstruction { pc: self.pc, raw: inst.raw }),
                         };
                         self.write_f32(rd, res);
                     }
                     (0, 0x18) => {
-                        // FCVT.W.S / FCVT.WU.S
                         let s = self.read_f32(rs1);
-                        let val = if rs2 == 0 {
-                            // FCVT.W.S
-                            s as i32 as u32
-                        } else {
-                            // FCVT.WU.S
-                            s as u32
-                        };
+                        let val = if rs2 == 0 { s as i32 as u32 } else { s as u32 };
                         self.write_reg(rd, val);
                     }
                     (0, 0x1A) => {
-                        // FCVT.S.W / FCVT.S.WU
                         let val = self.read_reg(rs1);
-                        let s = if rs2 == 0 {
-                            // FCVT.S.W
-                            (val as i32) as f32
-                        } else {
-                            // FCVT.S.WU
-                            val as f32
-                        };
+                        let s = if rs2 == 0 { (val as i32) as f32 } else { val as f32 };
                         self.write_f32(rd, s);
                     }
                     (0, 0x1C) => {
                         if funct3 == 0 {
-                            // FMV.X.W
                             let bits = self.read_f32(rs1).to_bits();
                             self.write_reg(rd, bits);
                         } else if funct3 == 1 {
-                            // FCLASS.S
                             let s = self.read_f32(rs1);
                             let bits = s.to_bits();
                             let is_neg = (bits & 0x80000000) != 0;
                             let mask = if s.is_infinite() {
-                                if is_neg {
-                                    1 << 0
-                                } else {
-                                    1 << 7
-                                }
+                                if is_neg { 1 << 0 } else { 1 << 7 }
                             } else if s.is_nan() {
-                                if (bits & 0x00400000) != 0 {
-                                    1 << 9
-                                } else {
-                                    1 << 8
-                                }
+                                if (bits & 0x00400000) != 0 { 1 << 9 } else { 1 << 8 }
                             } else if s == 0.0 {
-                                if is_neg {
-                                    1 << 3
-                                } else {
-                                    1 << 4
-                                }
+                                if is_neg { 1 << 3 } else { 1 << 4 }
                             } else if s.is_subnormal() {
-                                if is_neg {
-                                    1 << 2
-                                } else {
-                                    1 << 5
-                                }
+                                if is_neg { 1 << 2 } else { 1 << 5 }
                             } else if is_neg {
                                 1 << 1
                             } else {
@@ -624,163 +590,77 @@ impl Cpu {
                         }
                     }
                     (0, 0x1E) => {
-                        // FMV.W.X
                         let val = self.read_reg(rs1);
                         self.write_f32(rd, f32::from_bits(val));
                     }
                     (0, 0x14) => {
-                        // FEQ.S / FLT.S / FLE.S
                         let s1 = self.read_f32(rs1);
                         let s2 = self.read_f32(rs2);
                         let res = match funct3 {
-                            0 => {
-                                if s1 <= s2 {
-                                    1
-                                } else {
-                                    0
-                                }
-                            } // FLE.S
-                            1 => {
-                                if s1 < s2 {
-                                    1
-                                } else {
-                                    0
-                                }
-                            } // FLT.S
-                            2 => {
-                                if s1 == s2 {
-                                    1
-                                } else {
-                                    0
-                                }
-                            } // FEQ.S
-                            _ => return Err(format!("Unknown FCOMP funct3: {}", funct3)),
+                            0 => if s1 <= s2 { 1 } else { 0 },
+                            1 => if s1 < s2 { 1 } else { 0 },
+                            2 => if s1 == s2 { 1 } else { 0 },
+                            _ => return Err(CpuError::IllegalInstruction { pc: self.pc, raw: inst.raw }),
                         };
                         self.write_reg(rd, res);
                     }
                     (0, 0x08) => {
-                        // FCVT.S.D (rs2=1)
                         self.write_f32(rd, self.read_f64(rs1) as f32);
                     }
 
                     // Double precision (.d) fmt == 1
-                    (1, 0x00) => {
-                        // FADD.D
-                        self.write_f64(rd, self.read_f64(rs1) + self.read_f64(rs2));
-                    }
-                    (1, 0x01) => {
-                        // FSUB.D
-                        self.write_f64(rd, self.read_f64(rs1) - self.read_f64(rs2));
-                    }
-                    (1, 0x02) => {
-                        // FMUL.D
-                        self.write_f64(rd, self.read_f64(rs1) * self.read_f64(rs2));
-                    }
-                    (1, 0x03) => {
-                        // FDIV.D
-                        self.write_f64(rd, self.read_f64(rs1) / self.read_f64(rs2));
-                    }
-                    (1, 0x0B) => {
-                        // FSQRT.D
-                        self.write_f64(rd, self.read_f64(rs1).sqrt());
-                    }
+                    (1, 0x00) => self.write_f64(rd, self.read_f64(rs1) + self.read_f64(rs2)),
+                    (1, 0x01) => self.write_f64(rd, self.read_f64(rs1) - self.read_f64(rs2)),
+                    (1, 0x02) => self.write_f64(rd, self.read_f64(rs1) * self.read_f64(rs2)),
+                    (1, 0x03) => self.write_f64(rd, self.read_f64(rs1) / self.read_f64(rs2)),
+                    (1, 0x0B) => self.write_f64(rd, self.read_f64(rs1).sqrt()),
                     (1, 0x04) => {
-                        // FSGNJ / FSGNJN / FSGNJX .D
                         let b1 = self.fregs[rs1].to_bits();
                         let b2 = self.fregs[rs2].to_bits();
                         let res_bits = match funct3 {
-                            0 => (b1 & 0x7FFFFFFFFFFFFFFF) | (b2 & 0x8000000000000000), // FSGNJ.D
-                            1 => (b1 & 0x7FFFFFFFFFFFFFFF) | ((!b2) & 0x8000000000000000), // FSGNJN.D
-                            2 => (b1 & 0x7FFFFFFFFFFFFFFF) | ((b1 ^ b2) & 0x8000000000000000), // FSGNJX.D
-                            _ => return Err(format!("Unknown FSGNJ.D funct3: {}", funct3)),
+                            0 => (b1 & 0x7FFFFFFFFFFFFFFF) | (b2 & 0x8000000000000000),
+                            1 => (b1 & 0x7FFFFFFFFFFFFFFF) | ((!b2) & 0x8000000000000000),
+                            2 => (b1 & 0x7FFFFFFFFFFFFFFF) | ((b1 ^ b2) & 0x8000000000000000),
+                            _ => return Err(CpuError::IllegalInstruction { pc: self.pc, raw: inst.raw }),
                         };
                         self.fregs[rd] = f64::from_bits(res_bits);
                     }
                     (1, 0x05) => {
-                        // FMIN / FMAX .D
                         let d1 = self.read_f64(rs1);
                         let d2 = self.read_f64(rs2);
                         let res = match funct3 {
-                            0 => {
-                                if d1.is_nan() {
-                                    d2
-                                } else if d2.is_nan() {
-                                    d1
-                                } else {
-                                    d1.min(d2)
-                                }
-                            } // FMIN.D
-                            1 => {
-                                if d1.is_nan() {
-                                    d2
-                                } else if d2.is_nan() {
-                                    d1
-                                } else {
-                                    d1.max(d2)
-                                }
-                            } // FMAX.D
-                            _ => return Err(format!("Unknown FMIN/FMAX.D funct3: {}", funct3)),
+                            0 => if d1.is_nan() { d2 } else if d2.is_nan() { d1 } else { d1.min(d2) },
+                            1 => if d1.is_nan() { d2 } else if d2.is_nan() { d1 } else { d1.max(d2) },
+                            _ => return Err(CpuError::IllegalInstruction { pc: self.pc, raw: inst.raw }),
                         };
                         self.write_f64(rd, res);
                     }
                     (1, 0x08) => {
-                        // FCVT.D.S (rs2=0)
                         self.write_f64(rd, self.read_f32(rs1) as f64);
                     }
                     (1, 0x18) => {
-                        // FCVT.W.D / FCVT.WU.D
                         let d = self.read_f64(rs1);
-                        let val = if rs2 == 0 {
-                            // FCVT.W.D
-                            d as i32 as u32
-                        } else {
-                            // FCVT.WU.D
-                            d as u32
-                        };
+                        let val = if rs2 == 0 { d as i32 as u32 } else { d as u32 };
                         self.write_reg(rd, val);
                     }
                     (1, 0x1A) => {
-                        // FCVT.D.W / FCVT.D.WU
                         let val = self.read_reg(rs1);
-                        let d = if rs2 == 0 {
-                            // FCVT.D.W
-                            (val as i32) as f64
-                        } else {
-                            // FCVT.D.WU
-                            val as f64
-                        };
+                        let d = if rs2 == 0 { (val as i32) as f64 } else { val as f64 };
                         self.write_f64(rd, d);
                     }
                     (1, 0x1C) => {
                         if funct3 == 1 {
-                            // FCLASS.D
                             let d = self.read_f64(rs1);
                             let bits = d.to_bits();
                             let is_neg = (bits & 0x8000000000000000) != 0;
                             let mask = if d.is_infinite() {
-                                if is_neg {
-                                    1 << 0
-                                } else {
-                                    1 << 7
-                                }
+                                if is_neg { 1 << 0 } else { 1 << 7 }
                             } else if d.is_nan() {
-                                if (bits & 0x0008000000000000) != 0 {
-                                    1 << 9
-                                } else {
-                                    1 << 8
-                                }
+                                if (bits & 0x0008000000000000) != 0 { 1 << 9 } else { 1 << 8 }
                             } else if d == 0.0 {
-                                if is_neg {
-                                    1 << 3
-                                } else {
-                                    1 << 4
-                                }
+                                if is_neg { 1 << 3 } else { 1 << 4 }
                             } else if d.is_subnormal() {
-                                if is_neg {
-                                    1 << 2
-                                } else {
-                                    1 << 5
-                                }
+                                if is_neg { 1 << 2 } else { 1 << 5 }
                             } else if is_neg {
                                 1 << 1
                             } else {
@@ -790,156 +670,141 @@ impl Cpu {
                         }
                     }
                     (1, 0x14) => {
-                        // FEQ.D / FLT.D / FLE.D
                         let d1 = self.read_f64(rs1);
                         let d2 = self.read_f64(rs2);
                         let res = match funct3 {
-                            0 => {
-                                if d1 <= d2 {
-                                    1
-                                } else {
-                                    0
-                                }
-                            } // FLE.D
-                            1 => {
-                                if d1 < d2 {
-                                    1
-                                } else {
-                                    0
-                                }
-                            } // FLT.D
-                            2 => {
-                                if d1 == d2 {
-                                    1
-                                } else {
-                                    0
-                                }
-                            } // FEQ.D
-                            _ => return Err(format!("Unknown FCOMP.D funct3: {}", funct3)),
+                            0 => if d1 <= d2 { 1 } else { 0 },
+                            1 => if d1 < d2 { 1 } else { 0 },
+                            2 => if d1 == d2 { 1 } else { 0 },
+                            _ => return Err(CpuError::IllegalInstruction { pc: self.pc, raw: inst.raw }),
                         };
                         self.write_reg(rd, res);
                     }
-                    _ => return Err(format!("Unknown OP-FP fmt={} funct5={:#x}", fmt, funct5)),
+                    _ => return Err(CpuError::IllegalInstruction { pc: self.pc, raw: inst.raw }),
                 }
             }
-            // FMADD, FMSUB, FNMSUB, FNMADD (opcodes 0x43, 0x47, 0x4B, 0x4F)
-            0x43 | 0x47 | 0x4B | 0x4F => {
-                let rs3 = ((inst >> 27) & 0x1F) as usize;
-                let fmt = (inst >> 25) & 3;
+            OP_MADD | OP_MSUB | OP_NMSUB | OP_NMADD => {
+                let rs3 = inst.rs3;
+                let fmt = inst.raw.shift_then_mask(25, 3) as u8;
                 if fmt == 0 {
-                    // Single precision .s
                     let s1 = self.read_f32(rs1);
                     let s2 = self.read_f32(rs2);
                     let s3 = self.read_f32(rs3);
-                    let res = match opcode {
-                        0x43 => (s1 * s2) + s3,    // FMADD.S
-                        0x47 => (s1 * s2) - s3,    // FMSUB.S
-                        0x4B => -((s1 * s2) - s3), // FNMSUB.S
-                        0x4F => -((s1 * s2) + s3), // FNMADD.S
+                    let res = match inst.opcode {
+                        OP_MADD => (s1 * s2) + s3,
+                        OP_MSUB => (s1 * s2) - s3,
+                        OP_NMSUB => -((s1 * s2) - s3),
+                        OP_NMADD => -((s1 * s2) + s3),
                         _ => unreachable!(),
                     };
                     self.write_f32(rd, res);
                 } else if fmt == 1 {
-                    // Double precision .d
                     let d1 = self.read_f64(rs1);
                     let d2 = self.read_f64(rs2);
                     let d3 = self.read_f64(rs3);
-                    let res = match opcode {
-                        0x43 => (d1 * d2) + d3,    // FMADD.D
-                        0x47 => (d1 * d2) - d3,    // FMSUB.D
-                        0x4B => -((d1 * d2) - d3), // FNMSUB.D
-                        0x4F => -((d1 * d2) + d3), // FNMADD.D
+                    let res = match inst.opcode {
+                        OP_MADD => (d1 * d2) + d3,
+                        OP_MSUB => (d1 * d2) - d3,
+                        OP_NMSUB => -((d1 * d2) - d3),
+                        OP_NMADD => -((d1 * d2) + d3),
                         _ => unreachable!(),
                     };
                     self.write_f64(rd, res);
                 } else {
-                    return Err(format!("Unsupported FMA fmt: {}", fmt));
+                    return Err(CpuError::IllegalInstruction { pc: self.pc, raw: inst.raw });
                 }
             }
-            // SYSTEM / ECALL / CSR (opcode=0x73)
-            0x73 => {
-                if funct3 == 0 {
-                    let imm12 = inst >> 20;
-                    if imm12 == 0 {
-                        // ECALL
-                        handle_ecall(self, mem);
-                    } else if imm12 == 1 {
-                        // EBREAK
-                        self.is_halted = true;
-                    } else if imm12 == 0x302 {
-                        // MRET: set PC to mepc
-                        if let Some(&mepc) = self.csrs.get(&0x341) {
-                            next_pc = mepc;
-                        }
-                    }
-                } else {
-                    // CSR instructions
-                    let csr_num = ((inst >> 20) & 0xFFF) as u16;
-                    let old_val = *self.csrs.get(&csr_num).unwrap_or(&0);
-                    let src1_val = self.read_reg(rs1);
-                    let new_val = match funct3 {
-                        1 => src1_val,                // CSRRW
-                        2 => old_val | src1_val,      // CSRRS
-                        3 => old_val & !src1_val,     // CSRRC
-                        5 => rs1 as u32,              // CSRRWI
-                        6 => old_val | (rs1 as u32),  // CSRRSI
-                        7 => old_val & !(rs1 as u32), // CSRRCI
-                        _ => old_val,
-                    };
-                    self.csrs.insert(csr_num, new_val);
-                    self.write_reg(rd, old_val);
-                }
-            }
-            // FENCE / FENCE.I (opcode=0x0F)
-            0x0F => {}
-            _ => return Err(format!("Unrecognized 32-bit opcode: {:#x}", opcode)),
+            _ => return Err(CpuError::IllegalInstruction { pc: self.pc, raw: inst.raw }),
         }
-
-        self.pc = next_pc;
         Ok(())
     }
 
-    pub fn execute_inst16<M: MemoryOps>(&mut self, inst: u16, mem: &mut M) -> Result<(), String> {
-        // TODO: define all ops as constants like this one, and replace the literals in the match
-        // stmt with their const var names.
-        const ADDI4SPN: (u16, u16) = (0, 0);
+    #[inline(always)]
+    fn exec_csr<M: MemoryOps>(
+        &mut self,
+        inst: &DecodedInst32,
+        mem: &mut M,
+        next_pc: &mut u32,
+    ) -> Result<(), CpuError> {
+        let funct3 = inst.funct3;
+        let rd = inst.rd;
+        let rs1 = inst.rs1;
 
-        let op = inst & 0x3;
-        let funct3 = (inst >> 13) & 0x7;
+        if funct3 == 0 {
+            let imm12 = inst.raw >> 20;
+            if imm12 == 0 {
+                // ECALL
+                handle_ecall(self, mem);
+            } else if imm12 == 1 {
+                // EBREAK
+                self.is_halted = true;
+            } else if imm12 == 0x302 {
+                // MRET: set PC to mepc
+                if let Some(&mepc) = self.csrs.get(&0x341) {
+                    *next_pc = mepc;
+                }
+            }
+        } else {
+            // CSR instructions
+            let csr_num = ((inst.raw >> 20) & 0xFFF) as u16;
+            let old_val = *self.csrs.get(&csr_num).unwrap_or(&0);
+            let src1_val = self.read_reg(rs1);
+            let new_val = match funct3 {
+                1 => src1_val,                // CSRRW
+                2 => old_val | src1_val,      // CSRRS
+                3 => old_val & !src1_val,     // CSRRC
+                5 => rs1 as u32,              // CSRRWI
+                6 => old_val | (rs1 as u32),  // CSRRSI
+                7 => old_val & !(rs1 as u32), // CSRRCI
+                _ => old_val,
+            };
+            self.csrs.insert(csr_num, new_val);
+            self.write_reg(rd, old_val);
+        }
+        Ok(())
+    }
+
+    #[inline(always)]
+    pub fn execute_inst16<M: MemoryOps>(
+        &mut self,
+        inst: u16,
+        mem: &mut M,
+    ) -> Result<(), CpuError> {
+        let decoded = DecodedInst16::decode(inst);
         let mut next_pc = self.pc.wrapping_add(2);
 
-        match (op, funct3) {
+        match (decoded.op, decoded.funct3) {
             // Quadrant 0
-            ADDI4SPN => {
+            (0, 0) => {
                 // C.ADDI4SPN
-                let rdc = (((inst >> 2) & 0x7) + 8) as usize;
-                let imm = (((inst >> 7) & 0x30)
-                    | ((inst >> 1) & 0x3C0)
-                    | ((inst >> 4) & 0x4)
-                    | ((inst >> 2) & 0x8)) as u32;
+                let rdc = ((inst.shift_then_mask(2, 0x7)) + 8) as usize;
+                let imm = (inst.shift_then_mask(7, 0x30)
+                    | inst.shift_then_mask(1, 0x3C0)
+                    | inst.shift_then_mask(4, 0x4)
+                    | inst.shift_then_mask(2, 0x8)) as u32;
                 if imm != 0 {
                     self.write_reg(rdc, self.read_reg(2).wrapping_add(imm));
                 }
             }
             (0, 2) => {
                 // C.LW
-                let rdc = (((inst >> 2) & 0x7) + 8) as usize;
-                let rs1c = (((inst >> 7) & 0x7) + 8) as usize;
-                let offset = (((inst >> 6) & 0x4)
-                    | ((inst >> 10) & 0x38)
-                    | ((inst >> 3) & 0x40)
-                    | ((inst >> 2) & 0x8)) as u32;
+                let rdc = ((inst.shift_then_mask(2, 0x7)) + 8) as usize;
+                let rs1c = ((inst.shift_then_mask(7, 0x7)) + 8) as usize;
+                let offset = (inst.shift_then_mask(6, 0x4)
+                    | inst.shift_then_mask(10, 0x38)
+                    | inst.shift_then_mask(3, 0x40)
+                    | inst.shift_then_mask(2, 0x8)) as u32;
                 let addr = self.read_reg(rs1c).wrapping_add(offset);
                 self.write_reg(rdc, mem.read_u32(addr));
             }
             (0, 6) => {
                 // C.SW
-                let rs2c = (((inst >> 2) & 0x7) + 8) as usize;
-                let rs1c = (((inst >> 7) & 0x7) + 8) as usize;
-                let offset = (((inst >> 6) & 0x4)
-                    | ((inst >> 10) & 0x38)
-                    | ((inst >> 3) & 0x40)
-                    | ((inst >> 2) & 0x8)) as u32;
+                let rs2c = ((inst.shift_then_mask(2, 0x7)) + 8) as usize;
+                let rs1c = ((inst.shift_then_mask(7, 0x7)) + 8) as usize;
+                let offset = (inst.shift_then_mask(6, 0x4)
+                    | inst.shift_then_mask(10, 0x38)
+                    | inst.shift_then_mask(3, 0x40)
+                    | inst.shift_then_mask(2, 0x8)) as u32;
                 let addr = self.read_reg(rs1c).wrapping_add(offset);
                 mem.write_u32(addr, self.read_reg(rs2c));
             }
@@ -947,8 +812,8 @@ impl Cpu {
             // Quadrant 1
             (1, 0) => {
                 // C.NOP / C.ADDI
-                let rd = ((inst >> 7) & 0x1F) as usize;
-                let imm6 = (((inst >> 12) & 1) << 5) | ((inst >> 2) & 0x1F);
+                let rd = inst.shift_then_mask(7, 0x1F) as usize;
+                let imm6 = (inst.shift_then_mask(12, 1) << 5) | inst.shift_then_mask(2, 0x1F);
                 let sign_ext = ((imm6 as i16) << 10) >> 10;
                 if rd != 0 && sign_ext != 0 {
                     self.write_reg(rd, self.read_reg(rd).wrapping_add(sign_ext as i32 as u32));
@@ -956,35 +821,35 @@ impl Cpu {
             }
             (1, 1) => {
                 // C.JAL
-                let imm11 = (((inst >> 12) & 1) << 11)
-                    | (((inst >> 8) & 1) << 10)
-                    | (((inst >> 9) & 3) << 8)
-                    | (((inst >> 6) & 1) << 7)
-                    | (((inst >> 7) & 1) << 6)
-                    | (((inst >> 2) & 1) << 5)
-                    | (((inst >> 11) & 1) << 4)
-                    | (((inst >> 3) & 7) << 1);
+                let imm11 = (inst.shift_then_mask(12, 1) << 11)
+                    | (inst.shift_then_mask(8, 1) << 10)
+                    | (inst.shift_then_mask(9, 3) << 8)
+                    | (inst.shift_then_mask(6, 1) << 7)
+                    | (inst.shift_then_mask(7, 1) << 6)
+                    | (inst.shift_then_mask(2, 1) << 5)
+                    | (inst.shift_then_mask(11, 1) << 4)
+                    | (inst.shift_then_mask(3, 7) << 1);
                 let offset = ((imm11 as i16) << 4) >> 4;
                 self.write_reg(1, next_pc);
                 next_pc = self.pc.wrapping_add(offset as i32 as u32);
             }
             (1, 2) => {
                 // C.LI
-                let rd = ((inst >> 7) & 0x1F) as usize;
-                let imm6 = (((inst >> 12) & 1) << 5) | ((inst >> 2) & 0x1F);
+                let rd = inst.shift_then_mask(7, 0x1F) as usize;
+                let imm6 = (inst.shift_then_mask(12, 1) << 5) | inst.shift_then_mask(2, 0x1F);
                 let sign_ext = ((imm6 as i16) << 10) >> 10;
                 self.write_reg(rd, sign_ext as i32 as u32);
             }
             (1, 3) => {
                 // C.ADDI16SP / C.LUI
-                let rd = ((inst >> 7) & 0x1F) as usize;
+                let rd = inst.shift_then_mask(7, 0x1F) as usize;
                 if rd == 2 {
                     // C.ADDI16SP
-                    let imm = (((inst >> 12) & 1) << 9)
-                        | (((inst >> 3) & 3) << 7)
-                        | (((inst >> 5) & 1) << 6)
-                        | (((inst >> 2) & 1) << 5)
-                        | (((inst >> 6) & 1) << 4);
+                    let imm = (inst.shift_then_mask(12, 1) << 9)
+                        | (inst.shift_then_mask(3, 3) << 7)
+                        | (inst.shift_then_mask(5, 1) << 6)
+                        | (inst.shift_then_mask(2, 1) << 5)
+                        | (inst.shift_then_mask(6, 1) << 4);
                     let offset = ((imm as i16) << 6) >> 6;
                     self.write_reg(
                         2,
@@ -992,32 +857,32 @@ impl Cpu {
                     );
                 } else if rd != 0 {
                     // C.LUI
-                    let imm6 = (((inst >> 12) & 1) << 5) | ((inst >> 2) & 0x1F);
+                    let imm6 = (inst.shift_then_mask(12, 1) << 5) | inst.shift_then_mask(2, 0x1F);
                     let sign_ext = ((imm6 as i16) << 10) >> 10;
                     self.write_reg(rd, (sign_ext as i32 as u32) << 12);
                 }
             }
             (1, 5) => {
                 // C.J
-                let imm11 = (((inst >> 12) & 1) << 11)
-                    | (((inst >> 8) & 1) << 10)
-                    | (((inst >> 9) & 3) << 8)
-                    | (((inst >> 6) & 1) << 7)
-                    | (((inst >> 7) & 1) << 6)
-                    | (((inst >> 2) & 1) << 5)
-                    | (((inst >> 11) & 1) << 4)
-                    | (((inst >> 3) & 7) << 1);
+                let imm11 = (inst.shift_then_mask(12, 1) << 11)
+                    | (inst.shift_then_mask(8, 1) << 10)
+                    | (inst.shift_then_mask(9, 3) << 8)
+                    | (inst.shift_then_mask(6, 1) << 7)
+                    | (inst.shift_then_mask(7, 1) << 6)
+                    | (inst.shift_then_mask(2, 1) << 5)
+                    | (inst.shift_then_mask(11, 1) << 4)
+                    | (inst.shift_then_mask(3, 7) << 1);
                 let offset = ((imm11 as i16) << 4) >> 4;
                 next_pc = self.pc.wrapping_add(offset as i32 as u32);
             }
             (1, 6) => {
                 // C.BEQZ
-                let rs1c = (((inst >> 7) & 0x7) + 8) as usize;
-                let imm = (((inst >> 12) & 1) << 8)
-                    | (((inst >> 5) & 3) << 6)
-                    | (((inst >> 2) & 1) << 5)
-                    | (((inst >> 10) & 3) << 3)
-                    | (((inst >> 3) & 3) << 1);
+                let rs1c = ((inst.shift_then_mask(7, 0x7)) + 8) as usize;
+                let imm = (inst.shift_then_mask(12, 1) << 8)
+                    | (inst.shift_then_mask(5, 3) << 6)
+                    | (inst.shift_then_mask(2, 1) << 5)
+                    | (inst.shift_then_mask(10, 3) << 3)
+                    | (inst.shift_then_mask(3, 3) << 1);
                 let offset = ((imm as i16) << 7) >> 7;
                 if self.read_reg(rs1c) == 0 {
                     next_pc = self.pc.wrapping_add(offset as i32 as u32);
@@ -1025,12 +890,12 @@ impl Cpu {
             }
             (1, 7) => {
                 // C.BNEZ
-                let rs1c = (((inst >> 7) & 0x7) + 8) as usize;
-                let imm = (((inst >> 12) & 1) << 8)
-                    | (((inst >> 5) & 3) << 6)
-                    | (((inst >> 2) & 1) << 5)
-                    | (((inst >> 10) & 3) << 3)
-                    | (((inst >> 3) & 3) << 1);
+                let rs1c = ((inst.shift_then_mask(7, 0x7)) + 8) as usize;
+                let imm = (inst.shift_then_mask(12, 1) << 8)
+                    | (inst.shift_then_mask(5, 3) << 6)
+                    | (inst.shift_then_mask(2, 1) << 5)
+                    | (inst.shift_then_mask(10, 3) << 3)
+                    | (inst.shift_then_mask(3, 3) << 1);
                 let offset = ((imm as i16) << 7) >> 7;
                 if self.read_reg(rs1c) != 0 {
                     next_pc = self.pc.wrapping_add(offset as i32 as u32);
@@ -1040,27 +905,27 @@ impl Cpu {
             // Quadrant 2
             (2, 0) => {
                 // C.SLLI
-                let rd = ((inst >> 7) & 0x1F) as usize;
-                let shamt = (((inst >> 12) & 1) << 5) | ((inst >> 2) & 0x1F);
+                let rd = inst.shift_then_mask(7, 0x1F) as usize;
+                let shamt = (inst.shift_then_mask(12, 1) << 5) | inst.shift_then_mask(2, 0x1F);
                 if rd != 0 {
                     self.write_reg(rd, self.read_reg(rd) << shamt);
                 }
             }
             (2, 2) => {
                 // C.LWSP
-                let rd = ((inst >> 7) & 0x1F) as usize;
-                let offset = (((inst >> 2) & 0x1C)
-                    | ((inst >> 12) & 1) << 5
-                    | ((inst >> 7) & 0x3) << 6) as u32;
+                let rd = inst.shift_then_mask(7, 0x1F) as usize;
+                let offset = (inst.shift_then_mask(2, 0x1C)
+                    | inst.shift_then_mask(12, 1) << 5
+                    | inst.shift_then_mask(7, 0x3) << 6) as u32;
                 let addr = self.read_reg(2).wrapping_add(offset);
                 if rd != 0 {
                     self.write_reg(rd, mem.read_u32(addr));
                 }
             }
             (2, 4) => {
-                let rd = ((inst >> 7) & 0x1F) as usize;
-                let rs2 = ((inst >> 2) & 0x1F) as usize;
-                let bit12 = (inst >> 12) & 1;
+                let rd = inst.shift_then_mask(7, 0x1F) as usize;
+                let rs2 = inst.shift_then_mask(2, 0x1F) as usize;
+                let bit12 = inst.shift_then_mask(12, 1);
                 if bit12 == 0 && rs2 == 0 {
                     // C.JR
                     if rd != 0 {
@@ -1083,17 +948,17 @@ impl Cpu {
             }
             (2, 6) => {
                 // C.SWSP
-                let rs2 = ((inst >> 2) & 0x1F) as usize;
-                let offset = (((inst >> 9) & 0x3C) | ((inst >> 7) & 0x3) << 6) as u32;
+                let rs2 = inst.shift_then_mask(2, 0x1F) as usize;
+                let offset = (inst.shift_then_mask(9, 0x3C) | inst.shift_then_mask(7, 0x3) << 6) as u32;
                 let addr = self.read_reg(2).wrapping_add(offset);
                 mem.write_u32(addr, self.read_reg(rs2));
             }
 
             _ => {
-                return Err(format!(
-                    "Unrecognized 16-bit compressed instruction: {:#06x}",
-                    inst
-                ))
+                return Err(CpuError::IllegalInstruction {
+                    pc: self.pc,
+                    raw: inst as u32,
+                });
             }
         }
 
