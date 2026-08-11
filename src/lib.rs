@@ -314,6 +314,3 @@ pub fn run_whisper_binary(binary_bytes: &[u8], args_js: js_sys::Array) -> i32 {
     sim.load_binary(binary_bytes, args_js);
     sim.run_full()
 }
-
-#[wasm_bindgen]
-pub fn main_entry() {}

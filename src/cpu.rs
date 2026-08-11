@@ -27,13 +27,10 @@ pub struct Cpu {
     pub regs: [u32; 32],
     pub fregs: [f64; 32],
     pub pc: u32,
-    #[allow(dead_code)]
     pub fcsr: u32,
     pub csrs: HashMap<u16, u32>,
     pub is_halted: bool,
     pub exit_code: i32,
-    #[allow(dead_code)]
-    pub isa_imac: bool,
     pub debug_enabled: bool,
     pub breakpoints: std::collections::HashSet<u32>,
     pub step_counter: u64,
@@ -55,7 +52,6 @@ impl Cpu {
             csrs: HashMap::new(),
             is_halted: false,
             exit_code: 0,
-            isa_imac: true,
             debug_enabled: false,
             breakpoints: std::collections::HashSet::new(),
             step_counter: 0,
