@@ -56,12 +56,12 @@ type MmioWriteFn = Box<dyn Fn(u32, u32, u32)>;
 
 #[cfg(any(test, not(target_arch = "wasm32")))]
 std::thread_local! {
-    pub static MOCK_STDOUT: RefCell<Vec<String>> = RefCell::new(Vec::new());
-    pub static MOCK_STDERR: RefCell<Vec<String>> = RefCell::new(Vec::new());
-    pub static MOCK_STDIN: RefCell<Vec<u8>> = RefCell::new(Vec::new());
-    pub static MOCK_CUSTOM_SYSCALL: RefCell<Option<CustomSyscallFn>> = RefCell::new(None);
-    pub static MOCK_MMIO_READ: RefCell<Option<MmioReadFn>> = RefCell::new(None);
-    pub static MOCK_MMIO_WRITE: RefCell<Option<MmioWriteFn>> = RefCell::new(None);
+    pub static MOCK_STDOUT: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    pub static MOCK_STDERR: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    pub static MOCK_STDIN: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+    pub static MOCK_CUSTOM_SYSCALL: RefCell<Option<CustomSyscallFn>> = const { RefCell::new(None) };
+    pub static MOCK_MMIO_READ: RefCell<Option<MmioReadFn>> = const { RefCell::new(None) };
+    pub static MOCK_MMIO_WRITE: RefCell<Option<MmioWriteFn>> = const { RefCell::new(None) };
 }
 
 #[cfg(any(test, not(target_arch = "wasm32")))]
@@ -116,13 +116,8 @@ where
 pub fn custom_syscall(a0: i32, a1: i32, a2: i32, a3: i32, a7: i32) -> Result<i32, JsValue> {
     #[cfg(any(test, not(target_arch = "wasm32")))]
     {
-        let handled = MOCK_CUSTOM_SYSCALL.with(|hook| {
-            if let Some(ref f) = *hook.borrow() {
-                Some(f(a0, a1, a2, a3, a7))
-            } else {
-                None
-            }
-        });
+        let handled =
+            MOCK_CUSTOM_SYSCALL.with(|hook| hook.borrow().as_ref().map(|f| f(a0, a1, a2, a3, a7)));
         if let Some(res) = handled {
             return res;
         }
@@ -184,13 +179,7 @@ pub fn js_get_sleep_duration(_sleep_type: i32) -> i32 {
 pub fn js_read_mmio(addr: u32, size: u32) -> u32 {
     #[cfg(any(test, not(target_arch = "wasm32")))]
     {
-        let handled = MOCK_MMIO_READ.with(|hook| {
-            if let Some(ref f) = *hook.borrow() {
-                Some(f(addr, size))
-            } else {
-                None
-            }
-        });
+        let handled = MOCK_MMIO_READ.with(|hook| hook.borrow().as_ref().map(|f| f(addr, size)));
         if let Some(val) = handled {
             return val;
         }
@@ -239,6 +228,7 @@ pub fn js_sim_stop(snapshot: JsValue) {
     }
 }
 
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn read_from_stdin(buf_ptr: *mut u8, count: u32) -> i32 {
     #[cfg(any(test, not(target_arch = "wasm32")))]
     {
@@ -258,7 +248,7 @@ pub fn read_from_stdin(buf_ptr: *mut u8, count: u32) -> i32 {
                 0
             }
         });
-        return read_bytes;
+        read_bytes
     }
     #[cfg(target_arch = "wasm32")]
     {
@@ -299,4 +289,3 @@ pub fn js_print_err(msg: &str) {
         ffi::js_print_err(msg);
     }
 }
-

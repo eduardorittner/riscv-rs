@@ -69,6 +69,9 @@ fn test_js_mmio_dispatch() {
 
     // Verify MMIO Write Dispatch
     js_write_mmio(0xFFFF0010, 4, 0xCAFEBABE);
-    assert_eq!(last_written_addr.load(Ordering::SeqCst), 0xFFFF0010 | (4 << 28));
+    assert_eq!(
+        last_written_addr.load(Ordering::SeqCst),
+        0xFFFF0010 | (4 << 28)
+    );
     assert_eq!(last_written_val.load(Ordering::SeqCst), 0xCAFEBABE);
 }
