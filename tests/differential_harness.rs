@@ -64,7 +64,9 @@ fn manifest_dir() -> std::path::PathBuf {
 
 fn ensure_whisper_oracle_built() -> Option<&'static str> {
     if cfg!(target_os = "windows") {
-        println!("Skipping SweRV-ISS oracle build and process-spawning differential tests on Windows.");
+        println!(
+            "Skipping SweRV-ISS oracle build and process-spawning differential tests on Windows."
+        );
         return None;
     }
 
@@ -411,8 +413,15 @@ fn arb_i_type_instruction() -> impl Strategy<Value = u32> {
 fn arb_fp_instruction() -> impl Strategy<Value = u32> {
     prop_oneof![
         // Single-Precision FP Compute
-        (arb_freg(), arb_reg(), arb_freg(), arb_freg(), 0..5u32, 0..2u32).prop_map(
-            |(frd, ird, frs1, frs2, op, rm)| {
+        (
+            arb_freg(),
+            arb_reg(),
+            arb_freg(),
+            arb_freg(),
+            0..5u32,
+            0..2u32
+        )
+            .prop_map(|(frd, ird, frs1, frs2, op, rm)| {
                 match op {
                     0 => encode_r(0x53, frd, 0, frs1, frs2, 0x00),
                     1 => encode_r(0x53, frd, 0, frs1, frs2, 0x04),
@@ -420,11 +429,17 @@ fn arb_fp_instruction() -> impl Strategy<Value = u32> {
                     3 => encode_r(0x53, frd, 0, frs1, frs2, 0x0C),
                     _ => encode_r(0x53, ird, rm, frs1, frs2, 0x10),
                 }
-            }
-        ),
+            }),
         // Double-Precision FP Compute
-        (arb_freg(), arb_reg(), arb_freg(), arb_freg(), 0..5u32, 0..2u32).prop_map(
-            |(frd, ird, frs1, frs2, op, rm)| {
+        (
+            arb_freg(),
+            arb_reg(),
+            arb_freg(),
+            arb_freg(),
+            0..5u32,
+            0..2u32
+        )
+            .prop_map(|(frd, ird, frs1, frs2, op, rm)| {
                 match op {
                     0 => encode_r(0x53, frd, 0, frs1, frs2, 0x01),
                     1 => encode_r(0x53, frd, 0, frs1, frs2, 0x05),
@@ -432,8 +447,7 @@ fn arb_fp_instruction() -> impl Strategy<Value = u32> {
                     3 => encode_r(0x53, frd, 0, frs1, frs2, 0x0D),
                     _ => encode_r(0x53, ird, rm, frs1, frs2, 0x11),
                 }
-            }
-        ),
+            }),
         // FMA
         (
             arb_freg(),
