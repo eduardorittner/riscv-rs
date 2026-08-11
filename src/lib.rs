@@ -13,9 +13,9 @@ use disasm::Disassembler;
 use goblin::elf::Elf;
 pub use inst::{DecodedInst16, DecodedInst32};
 pub use memory::{Memory, MemoryOps};
-pub use utils::{shift_then_mask, ShiftThenMask};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+pub use utils::{shift_then_mask, ShiftThenMask};
 use wasm_bindgen::prelude::*;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

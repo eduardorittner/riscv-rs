@@ -37,10 +37,18 @@ impl std::fmt::Display for CpuError {
                 write!(f, "Unknown opcode {:#04x} at PC {:#010x}", opcode, pc)
             }
             Self::UnalignedAccess { pc, addr } => {
-                write!(f, "Unaligned memory access at {:#010x} (PC {:#010x})", addr, pc)
+                write!(
+                    f,
+                    "Unaligned memory access at {:#010x} (PC {:#010x})",
+                    addr, pc
+                )
             }
             Self::MemoryFault { pc, addr } => {
-                write!(f, "Memory fault at address {:#010x} (PC {:#010x})", addr, pc)
+                write!(
+                    f,
+                    "Memory fault at address {:#010x} (PC {:#010x})",
+                    addr, pc
+                )
             }
             Self::UnhandledSyscall { pc, number } => {
                 write!(f, "Unhandled syscall {} at PC {:#010x}", number, pc)
@@ -274,16 +282,8 @@ impl Cpu {
         let mut next_pc = self.pc.wrapping_add(4);
 
         match inst.opcode {
-            OP_LUI
-            | OP_AUIPC
-            | OP_JAL
-            | OP_JALR
-            | OP_BRANCH
-            | OP_LOAD
-            | OP_STORE
-            | OP_IMM
-            | OP_OP
-            | OP_MISC_MEM => {
+            OP_LUI | OP_AUIPC | OP_JAL | OP_JALR | OP_BRANCH | OP_LOAD | OP_STORE | OP_IMM
+            | OP_OP | OP_MISC_MEM => {
                 if inst.opcode == OP_OP && inst.funct7 == 0x01 {
                     self.exec_rv32m(&inst, mem)?;
                 } else {
@@ -295,7 +295,12 @@ impl Cpu {
                 self.exec_rv32fd(&inst, mem)?;
             }
             OP_SYSTEM => self.exec_csr(&inst, mem, &mut next_pc)?,
-            _ => return Err(CpuError::UnknownOpcode { pc: self.pc, opcode: inst.opcode }),
+            _ => {
+                return Err(CpuError::UnknownOpcode {
+                    pc: self.pc,
+                    opcode: inst.opcode,
+                })
+            }
         }
 
         self.pc = next_pc;
@@ -335,7 +340,12 @@ impl Cpu {
                     5 => (src1 as i32) >= (src2 as i32),
                     6 => src1 < src2,
                     7 => src1 >= src2,
-                    _ => return Err(CpuError::IllegalInstruction { pc: self.pc, raw: inst.raw }),
+                    _ => {
+                        return Err(CpuError::IllegalInstruction {
+                            pc: self.pc,
+                            raw: inst.raw,
+                        })
+                    }
                 };
                 if take {
                     *next_pc = self.pc.wrapping_add(inst.b_imm() as u32);
@@ -349,7 +359,12 @@ impl Cpu {
                     2 => mem.read_u32(addr),
                     4 => mem.read_u8(addr) as u32,
                     5 => mem.read_u16(addr) as u32,
-                    _ => return Err(CpuError::IllegalInstruction { pc: self.pc, raw: inst.raw }),
+                    _ => {
+                        return Err(CpuError::IllegalInstruction {
+                            pc: self.pc,
+                            raw: inst.raw,
+                        })
+                    }
                 };
                 self.write_reg(inst.rd, val);
             }
@@ -360,7 +375,12 @@ impl Cpu {
                     0 => mem.write_u8(addr, val as u8),
                     1 => mem.write_u16(addr, val as u16),
                     2 => mem.write_u32(addr, val),
-                    _ => return Err(CpuError::IllegalInstruction { pc: self.pc, raw: inst.raw }),
+                    _ => {
+                        return Err(CpuError::IllegalInstruction {
+                            pc: self.pc,
+                            raw: inst.raw,
+                        })
+                    }
                 }
             }
             OP_IMM => {
@@ -369,8 +389,20 @@ impl Cpu {
                 let shamt = (inst.rs2 & 0x1F) as u32;
                 let val = match inst.funct3 {
                     0 => src1.wrapping_add(imm as u32),
-                    2 => if (src1 as i32) < imm { 1 } else { 0 },
-                    3 => if src1 < (imm as u32) { 1 } else { 0 },
+                    2 => {
+                        if (src1 as i32) < imm {
+                            1
+                        } else {
+                            0
+                        }
+                    }
+                    3 => {
+                        if src1 < (imm as u32) {
+                            1
+                        } else {
+                            0
+                        }
+                    }
                     4 => src1 ^ (imm as u32),
                     6 => src1 | (imm as u32),
                     7 => src1 & (imm as u32),
@@ -382,7 +414,12 @@ impl Cpu {
                             src1 >> shamt
                         }
                     }
-                    _ => return Err(CpuError::IllegalInstruction { pc: self.pc, raw: inst.raw }),
+                    _ => {
+                        return Err(CpuError::IllegalInstruction {
+                            pc: self.pc,
+                            raw: inst.raw,
+                        })
+                    }
                 };
                 self.write_reg(inst.rd, val);
             }
@@ -393,19 +430,41 @@ impl Cpu {
                     (0x00, 0) => src1.wrapping_add(src2),
                     (0x20, 0) => src1.wrapping_sub(src2),
                     (0x00, 1) => src1 << (src2 & 0x1F),
-                    (0x00, 2) => if (src1 as i32) < (src2 as i32) { 1 } else { 0 },
-                    (0x00, 3) => if src1 < src2 { 1 } else { 0 },
+                    (0x00, 2) => {
+                        if (src1 as i32) < (src2 as i32) {
+                            1
+                        } else {
+                            0
+                        }
+                    }
+                    (0x00, 3) => {
+                        if src1 < src2 {
+                            1
+                        } else {
+                            0
+                        }
+                    }
                     (0x00, 4) => src1 ^ src2,
                     (0x00, 5) => src1 >> (src2 & 0x1F),
                     (0x20, 5) => ((src1 as i32) >> (src2 & 0x1F)) as u32,
                     (0x00, 6) => src1 | src2,
                     (0x00, 7) => src1 & src2,
-                    _ => return Err(CpuError::IllegalInstruction { pc: self.pc, raw: inst.raw }),
+                    _ => {
+                        return Err(CpuError::IllegalInstruction {
+                            pc: self.pc,
+                            raw: inst.raw,
+                        })
+                    }
                 };
                 self.write_reg(inst.rd, val);
             }
             OP_MISC_MEM => {}
-            _ => return Err(CpuError::IllegalInstruction { pc: self.pc, raw: inst.raw }),
+            _ => {
+                return Err(CpuError::IllegalInstruction {
+                    pc: self.pc,
+                    raw: inst.raw,
+                })
+            }
         }
         Ok(())
     }
@@ -445,7 +504,12 @@ impl Cpu {
                     src1 % src2
                 }
             }
-            _ => return Err(CpuError::IllegalInstruction { pc: self.pc, raw: inst.raw }),
+            _ => {
+                return Err(CpuError::IllegalInstruction {
+                    pc: self.pc,
+                    raw: inst.raw,
+                })
+            }
         };
         self.write_reg(inst.rd, val);
         Ok(())
@@ -468,16 +532,21 @@ impl Cpu {
                 rd_val = 0;
                 src2
             } // SC.W
-            0x01 => src2,                       // AMOSWAP.W
+            0x01 => src2,    // AMOSWAP.W
             0x00 => old_val.wrapping_add(src2), // AMOADD.W
-            0x04 => old_val ^ src2,             // AMOXOR.W
-            0x0C => old_val & src2,             // AMOAND.W
-            0x08 => old_val | src2,             // AMOOR.W
+            0x04 => old_val ^ src2, // AMOXOR.W
+            0x0C => old_val & src2, // AMOAND.W
+            0x08 => old_val | src2, // AMOOR.W
             0x10 => (old_val as i32).min(src2 as i32) as u32, // AMOMIN.W
             0x14 => (old_val as i32).max(src2 as i32) as u32, // AMOMAX.W
-            0x18 => old_val.min(src2),          // AMOMINU.W
-            0x1C => old_val.max(src2),          // AMOMAXU.W
-            _ => return Err(CpuError::IllegalInstruction { pc: self.pc, raw: inst.raw }),
+            0x18 => old_val.min(src2), // AMOMINU.W
+            0x1C => old_val.max(src2), // AMOMAXU.W
+            _ => {
+                return Err(CpuError::IllegalInstruction {
+                    pc: self.pc,
+                    raw: inst.raw,
+                })
+            }
         };
         if funct5 != 0x02 {
             mem.write_u32(addr, new_val);
@@ -507,7 +576,10 @@ impl Cpu {
                     let high = mem.read_u32(addr + 4) as u64;
                     self.write_f64(rd, f64::from_bits((high << 32) | low));
                 } else {
-                    return Err(CpuError::IllegalInstruction { pc: self.pc, raw: inst.raw });
+                    return Err(CpuError::IllegalInstruction {
+                        pc: self.pc,
+                        raw: inst.raw,
+                    });
                 }
             }
             OP_STORE_FP => {
@@ -520,7 +592,10 @@ impl Cpu {
                     mem.write_u32(addr, bits as u32);
                     mem.write_u32(addr + 4, (bits >> 32) as u32);
                 } else {
-                    return Err(CpuError::IllegalInstruction { pc: self.pc, raw: inst.raw });
+                    return Err(CpuError::IllegalInstruction {
+                        pc: self.pc,
+                        raw: inst.raw,
+                    });
                 }
             }
             OP_OP_FP => {
@@ -541,7 +616,12 @@ impl Cpu {
                             0 => (b1 & 0x7FFFFFFF) | (b2 & 0x80000000),
                             1 => (b1 & 0x7FFFFFFF) | ((!b2) & 0x80000000),
                             2 => (b1 & 0x7FFFFFFF) | ((b1 ^ b2) & 0x80000000),
-                            _ => return Err(CpuError::IllegalInstruction { pc: self.pc, raw: inst.raw }),
+                            _ => {
+                                return Err(CpuError::IllegalInstruction {
+                                    pc: self.pc,
+                                    raw: inst.raw,
+                                })
+                            }
                         };
                         self.fregs[rd] = f64::from_bits(0xFFFFFFFF00000000u64 | (res_bits as u64));
                     }
@@ -549,9 +629,30 @@ impl Cpu {
                         let s1 = self.read_f32(rs1);
                         let s2 = self.read_f32(rs2);
                         let res = match funct3 {
-                            0 => if s1.is_nan() { s2 } else if s2.is_nan() { s1 } else { s1.min(s2) },
-                            1 => if s1.is_nan() { s2 } else if s2.is_nan() { s1 } else { s1.max(s2) },
-                            _ => return Err(CpuError::IllegalInstruction { pc: self.pc, raw: inst.raw }),
+                            0 => {
+                                if s1.is_nan() {
+                                    s2
+                                } else if s2.is_nan() {
+                                    s1
+                                } else {
+                                    s1.min(s2)
+                                }
+                            }
+                            1 => {
+                                if s1.is_nan() {
+                                    s2
+                                } else if s2.is_nan() {
+                                    s1
+                                } else {
+                                    s1.max(s2)
+                                }
+                            }
+                            _ => {
+                                return Err(CpuError::IllegalInstruction {
+                                    pc: self.pc,
+                                    raw: inst.raw,
+                                })
+                            }
                         };
                         self.write_f32(rd, res);
                     }
@@ -562,7 +663,11 @@ impl Cpu {
                     }
                     (0, 0x1A) => {
                         let val = self.read_reg(rs1);
-                        let s = if rs2 == 0 { (val as i32) as f32 } else { val as f32 };
+                        let s = if rs2 == 0 {
+                            (val as i32) as f32
+                        } else {
+                            val as f32
+                        };
                         self.write_f32(rd, s);
                     }
                     (0, 0x1C) => {
@@ -574,13 +679,29 @@ impl Cpu {
                             let bits = s.to_bits();
                             let is_neg = (bits & 0x80000000) != 0;
                             let mask = if s.is_infinite() {
-                                if is_neg { 1 << 0 } else { 1 << 7 }
+                                if is_neg {
+                                    1 << 0
+                                } else {
+                                    1 << 7
+                                }
                             } else if s.is_nan() {
-                                if (bits & 0x00400000) != 0 { 1 << 9 } else { 1 << 8 }
+                                if (bits & 0x00400000) != 0 {
+                                    1 << 9
+                                } else {
+                                    1 << 8
+                                }
                             } else if s == 0.0 {
-                                if is_neg { 1 << 3 } else { 1 << 4 }
+                                if is_neg {
+                                    1 << 3
+                                } else {
+                                    1 << 4
+                                }
                             } else if s.is_subnormal() {
-                                if is_neg { 1 << 2 } else { 1 << 5 }
+                                if is_neg {
+                                    1 << 2
+                                } else {
+                                    1 << 5
+                                }
                             } else if is_neg {
                                 1 << 1
                             } else {
@@ -597,10 +718,33 @@ impl Cpu {
                         let s1 = self.read_f32(rs1);
                         let s2 = self.read_f32(rs2);
                         let res = match funct3 {
-                            0 => if s1 <= s2 { 1 } else { 0 },
-                            1 => if s1 < s2 { 1 } else { 0 },
-                            2 => if s1 == s2 { 1 } else { 0 },
-                            _ => return Err(CpuError::IllegalInstruction { pc: self.pc, raw: inst.raw }),
+                            0 => {
+                                if s1 <= s2 {
+                                    1
+                                } else {
+                                    0
+                                }
+                            }
+                            1 => {
+                                if s1 < s2 {
+                                    1
+                                } else {
+                                    0
+                                }
+                            }
+                            2 => {
+                                if s1 == s2 {
+                                    1
+                                } else {
+                                    0
+                                }
+                            }
+                            _ => {
+                                return Err(CpuError::IllegalInstruction {
+                                    pc: self.pc,
+                                    raw: inst.raw,
+                                })
+                            }
                         };
                         self.write_reg(rd, res);
                     }
@@ -621,7 +765,12 @@ impl Cpu {
                             0 => (b1 & 0x7FFFFFFFFFFFFFFF) | (b2 & 0x8000000000000000),
                             1 => (b1 & 0x7FFFFFFFFFFFFFFF) | ((!b2) & 0x8000000000000000),
                             2 => (b1 & 0x7FFFFFFFFFFFFFFF) | ((b1 ^ b2) & 0x8000000000000000),
-                            _ => return Err(CpuError::IllegalInstruction { pc: self.pc, raw: inst.raw }),
+                            _ => {
+                                return Err(CpuError::IllegalInstruction {
+                                    pc: self.pc,
+                                    raw: inst.raw,
+                                })
+                            }
                         };
                         self.fregs[rd] = f64::from_bits(res_bits);
                     }
@@ -629,9 +778,30 @@ impl Cpu {
                         let d1 = self.read_f64(rs1);
                         let d2 = self.read_f64(rs2);
                         let res = match funct3 {
-                            0 => if d1.is_nan() { d2 } else if d2.is_nan() { d1 } else { d1.min(d2) },
-                            1 => if d1.is_nan() { d2 } else if d2.is_nan() { d1 } else { d1.max(d2) },
-                            _ => return Err(CpuError::IllegalInstruction { pc: self.pc, raw: inst.raw }),
+                            0 => {
+                                if d1.is_nan() {
+                                    d2
+                                } else if d2.is_nan() {
+                                    d1
+                                } else {
+                                    d1.min(d2)
+                                }
+                            }
+                            1 => {
+                                if d1.is_nan() {
+                                    d2
+                                } else if d2.is_nan() {
+                                    d1
+                                } else {
+                                    d1.max(d2)
+                                }
+                            }
+                            _ => {
+                                return Err(CpuError::IllegalInstruction {
+                                    pc: self.pc,
+                                    raw: inst.raw,
+                                })
+                            }
                         };
                         self.write_f64(rd, res);
                     }
@@ -645,7 +815,11 @@ impl Cpu {
                     }
                     (1, 0x1A) => {
                         let val = self.read_reg(rs1);
-                        let d = if rs2 == 0 { (val as i32) as f64 } else { val as f64 };
+                        let d = if rs2 == 0 {
+                            (val as i32) as f64
+                        } else {
+                            val as f64
+                        };
                         self.write_f64(rd, d);
                     }
                     (1, 0x1C) => {
@@ -654,13 +828,29 @@ impl Cpu {
                             let bits = d.to_bits();
                             let is_neg = (bits & 0x8000000000000000) != 0;
                             let mask = if d.is_infinite() {
-                                if is_neg { 1 << 0 } else { 1 << 7 }
+                                if is_neg {
+                                    1 << 0
+                                } else {
+                                    1 << 7
+                                }
                             } else if d.is_nan() {
-                                if (bits & 0x0008000000000000) != 0 { 1 << 9 } else { 1 << 8 }
+                                if (bits & 0x0008000000000000) != 0 {
+                                    1 << 9
+                                } else {
+                                    1 << 8
+                                }
                             } else if d == 0.0 {
-                                if is_neg { 1 << 3 } else { 1 << 4 }
+                                if is_neg {
+                                    1 << 3
+                                } else {
+                                    1 << 4
+                                }
                             } else if d.is_subnormal() {
-                                if is_neg { 1 << 2 } else { 1 << 5 }
+                                if is_neg {
+                                    1 << 2
+                                } else {
+                                    1 << 5
+                                }
                             } else if is_neg {
                                 1 << 1
                             } else {
@@ -673,14 +863,42 @@ impl Cpu {
                         let d1 = self.read_f64(rs1);
                         let d2 = self.read_f64(rs2);
                         let res = match funct3 {
-                            0 => if d1 <= d2 { 1 } else { 0 },
-                            1 => if d1 < d2 { 1 } else { 0 },
-                            2 => if d1 == d2 { 1 } else { 0 },
-                            _ => return Err(CpuError::IllegalInstruction { pc: self.pc, raw: inst.raw }),
+                            0 => {
+                                if d1 <= d2 {
+                                    1
+                                } else {
+                                    0
+                                }
+                            }
+                            1 => {
+                                if d1 < d2 {
+                                    1
+                                } else {
+                                    0
+                                }
+                            }
+                            2 => {
+                                if d1 == d2 {
+                                    1
+                                } else {
+                                    0
+                                }
+                            }
+                            _ => {
+                                return Err(CpuError::IllegalInstruction {
+                                    pc: self.pc,
+                                    raw: inst.raw,
+                                })
+                            }
                         };
                         self.write_reg(rd, res);
                     }
-                    _ => return Err(CpuError::IllegalInstruction { pc: self.pc, raw: inst.raw }),
+                    _ => {
+                        return Err(CpuError::IllegalInstruction {
+                            pc: self.pc,
+                            raw: inst.raw,
+                        })
+                    }
                 }
             }
             OP_MADD | OP_MSUB | OP_NMSUB | OP_NMADD => {
@@ -695,7 +913,12 @@ impl Cpu {
                         OP_MSUB => (s1 * s2) - s3,
                         OP_NMSUB => -((s1 * s2) - s3),
                         OP_NMADD => -((s1 * s2) + s3),
-                        _ => return Err(CpuError::IllegalInstruction { pc: self.pc, raw: inst.raw }),
+                        _ => {
+                            return Err(CpuError::IllegalInstruction {
+                                pc: self.pc,
+                                raw: inst.raw,
+                            })
+                        }
                     };
                     self.write_f32(rd, res);
                 } else if fmt == 1 {
@@ -707,14 +930,27 @@ impl Cpu {
                         OP_MSUB => (d1 * d2) - d3,
                         OP_NMSUB => -((d1 * d2) - d3),
                         OP_NMADD => -((d1 * d2) + d3),
-                        _ => return Err(CpuError::IllegalInstruction { pc: self.pc, raw: inst.raw }),
+                        _ => {
+                            return Err(CpuError::IllegalInstruction {
+                                pc: self.pc,
+                                raw: inst.raw,
+                            })
+                        }
                     };
                     self.write_f64(rd, res);
                 } else {
-                    return Err(CpuError::IllegalInstruction { pc: self.pc, raw: inst.raw });
+                    return Err(CpuError::IllegalInstruction {
+                        pc: self.pc,
+                        raw: inst.raw,
+                    });
                 }
             }
-            _ => return Err(CpuError::IllegalInstruction { pc: self.pc, raw: inst.raw }),
+            _ => {
+                return Err(CpuError::IllegalInstruction {
+                    pc: self.pc,
+                    raw: inst.raw,
+                })
+            }
         }
         Ok(())
     }
@@ -765,11 +1001,7 @@ impl Cpu {
     }
 
     #[inline(always)]
-    pub fn execute_inst16<M: MemoryOps>(
-        &mut self,
-        inst: u16,
-        mem: &mut M,
-    ) -> Result<(), CpuError> {
+    pub fn execute_inst16<M: MemoryOps>(&mut self, inst: u16, mem: &mut M) -> Result<(), CpuError> {
         let decoded = DecodedInst16::decode(inst);
         let mut next_pc = self.pc.wrapping_add(2);
 
@@ -949,7 +1181,8 @@ impl Cpu {
             (2, 6) => {
                 // C.SWSP
                 let rs2 = inst.shift_then_mask(2, 0x1F) as usize;
-                let offset = (inst.shift_then_mask(9, 0x3C) | inst.shift_then_mask(7, 0x3) << 6) as u32;
+                let offset =
+                    (inst.shift_then_mask(9, 0x3C) | inst.shift_then_mask(7, 0x3) << 6) as u32;
                 let addr = self.read_reg(2).wrapping_add(offset);
                 mem.write_u32(addr, self.read_reg(rs2));
             }
