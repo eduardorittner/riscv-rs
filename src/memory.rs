@@ -91,7 +91,10 @@ impl Memory {
         if self.pages[page_idx].is_none() {
             self.pages[page_idx] = Some(Box::new([0u8; PAGE_SIZE]));
         }
-        self.pages[page_idx].as_mut().unwrap()
+        match &mut self.pages[page_idx] {
+            Some(page) => page.as_mut(),
+            None => unreachable!(),
+        }
     }
 
     #[inline(always)]

@@ -284,7 +284,7 @@ impl Simulator {
             disasm_list.push(item);
             curr = curr.saturating_add(step);
         }
-        serde_wasm_bindgen::to_value(&disasm_list).unwrap()
+        serde_wasm_bindgen::to_value(&disasm_list).unwrap_or(JsValue::NULL)
     }
 
     pub fn get_symbol_at(&self, addr: u32) -> Option<String> {

@@ -257,7 +257,7 @@ impl Cpu {
             is_breakpoint,
             hit_address,
         };
-        serde_wasm_bindgen::to_value(&snapshot).unwrap()
+        serde_wasm_bindgen::to_value(&snapshot).unwrap_or(JsValue::NULL)
     }
 
     fn handle_interrupt(&mut self, irq: i32) {
@@ -695,7 +695,7 @@ impl Cpu {
                         OP_MSUB => (s1 * s2) - s3,
                         OP_NMSUB => -((s1 * s2) - s3),
                         OP_NMADD => -((s1 * s2) + s3),
-                        _ => unreachable!(),
+                        _ => return Err(CpuError::IllegalInstruction { pc: self.pc, raw: inst.raw }),
                     };
                     self.write_f32(rd, res);
                 } else if fmt == 1 {
@@ -707,7 +707,7 @@ impl Cpu {
                         OP_MSUB => (d1 * d2) - d3,
                         OP_NMSUB => -((d1 * d2) - d3),
                         OP_NMADD => -((d1 * d2) + d3),
-                        _ => unreachable!(),
+                        _ => return Err(CpuError::IllegalInstruction { pc: self.pc, raw: inst.raw }),
                     };
                     self.write_f64(rd, res);
                 } else {
