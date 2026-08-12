@@ -1,9 +1,9 @@
 [package]
-name = "rust-whisper"
+name = "riscv-rs"
 version = "0.1.0"
 edition = "2021"
 authors = ["RISC-V ALE Team"]
-description = "High-performance Rust WASM drop-in replacement for whisper.js"
+description = "High-performance Rust WASM emulator"
 
 [lib]
 crate-type = ["cdylib", "rlib"]

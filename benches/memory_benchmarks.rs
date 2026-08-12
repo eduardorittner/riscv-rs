@@ -1,5 +1,5 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use rust_whisper::memory::{Memory, MemoryOps};
+use riscv_rs::memory::{Memory, MemoryOps};
 use std::collections::HashMap;
 
 /// An alternative contiguous implementer of `MemoryOps` backed by a flat `Vec<u8>`.

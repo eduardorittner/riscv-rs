@@ -1,9 +1,9 @@
 use proptest::prelude::*;
-use rust_whisper::host_imports::{
+use riscv_rs::host_imports::{
     get_mock_stderr, get_mock_stdout, reset_mocks, set_mock_custom_syscall, set_mock_stdin,
 };
-use rust_whisper::syscall::handle_ecall;
-use rust_whisper::{Cpu, Memory, MemoryOps};
+use riscv_rs::syscall::handle_ecall;
+use riscv_rs::{Cpu, Memory, MemoryOps};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
 proptest! {

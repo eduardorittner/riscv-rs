@@ -1,4 +1,4 @@
-use rust_whisper::host_imports::{
+use riscv_rs::host_imports::{
     get_mock_stderr, get_mock_stdout, js_print, js_print_err, js_read_mmio, js_write_mmio,
     read_from_stdin, reset_mocks, set_mock_mmio_read, set_mock_mmio_write, set_mock_stdin,
 };

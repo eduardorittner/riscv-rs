@@ -1,5 +1,5 @@
 use proptest::prelude::*;
-use rust_whisper::{Cpu, Memory, MemoryOps};
+use riscv_rs::{Cpu, Memory, MemoryOps};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};

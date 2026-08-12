@@ -1,6 +1,6 @@
-# rust-whisper
+# riscv-rs
 
-`rust-whisper` is a high-performance RISC-V emulator written in Rust, compiled to WebAssembly (Wasm) as a direct drop-in replacement for `whisper.js` in the RISC-V ALE project.
+`riscv-rs` is a high-performance RISC-V emulator written in Rust, compiled to WebAssembly (Wasm) for the RISC-V ALE project.
 
 ## Target RISC-V ISA Subset
 

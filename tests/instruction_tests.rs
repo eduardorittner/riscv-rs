@@ -1,4 +1,4 @@
-use rust_whisper::{Cpu, Memory, MemoryOps};
+use riscv_rs::{Cpu, Memory, MemoryOps};
 
 fn encode_r(opcode: u32, rd: usize, funct3: u32, rs1: usize, rs2: usize, funct7: u32) -> u32 {
     (funct7 << 25)

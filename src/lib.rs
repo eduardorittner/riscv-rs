@@ -312,7 +312,7 @@ fn is_call_instruction(inst: u32) -> bool {
 }
 
 #[wasm_bindgen]
-pub fn run_whisper_binary(binary_bytes: &[u8], args_js: js_sys::Array) -> i32 {
+pub fn run_riscv_binary(binary_bytes: &[u8], args_js: js_sys::Array) -> i32 {
     let mut sim = Simulator::new();
     sim.load_binary(binary_bytes, args_js);
     sim.run_full()
