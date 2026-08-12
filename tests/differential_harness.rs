@@ -520,3 +520,12 @@ proptest! {
         run_differential_test(&instructions);
     }
 }
+
+#[test]
+fn test_failing_ci_sequence() {
+    let instructions = vec![
+        33554627, 34941991, 63250563, 59058435, 1782843719, 1631338131, 1141073939, 48570915,
+        289540691, 548836435,
+    ];
+    run_differential_test(&instructions);
+}

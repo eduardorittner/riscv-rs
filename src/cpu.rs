@@ -570,7 +570,8 @@ impl Cpu {
             OP_LOAD_FP => {
                 let addr = self.read_reg(rs1).wrapping_add(inst.i_imm() as u32);
                 if funct3 == 2 {
-                    self.write_f32(rd, f32::from_bits(mem.read_u32(addr)));
+                    let raw = mem.read_u32(addr);
+                    self.fregs[rd] = f64::from_bits(0xFFFFFFFF00000000u64 | (raw as u64));
                 } else if funct3 == 3 {
                     let low = mem.read_u32(addr) as u64;
                     let high = mem.read_u32(addr + 4) as u64;
@@ -585,7 +586,7 @@ impl Cpu {
             OP_STORE_FP => {
                 let addr = self.read_reg(rs1).wrapping_add(inst.s_imm() as u32);
                 if funct3 == 2 {
-                    let bits = self.read_f32(rs2).to_bits();
+                    let bits = (self.fregs[rs2].to_bits() & 0xFFFFFFFF) as u32;
                     mem.write_u32(addr, bits);
                 } else if funct3 == 3 {
                     let bits = self.read_f64(rs2).to_bits();
@@ -672,7 +673,7 @@ impl Cpu {
                     }
                     (0, 0x1C) => {
                         if funct3 == 0 {
-                            let bits = self.read_f32(rs1).to_bits();
+                            let bits = (self.fregs[rs1].to_bits() & 0xFFFFFFFF) as u32;
                             self.write_reg(rd, bits);
                         } else if funct3 == 1 {
                             let s = self.read_f32(rs1);
@@ -712,7 +713,7 @@ impl Cpu {
                     }
                     (0, 0x1E) => {
                         let val = self.read_reg(rs1);
-                        self.write_f32(rd, f32::from_bits(val));
+                        self.fregs[rd] = f64::from_bits(0xFFFFFFFF00000000u64 | (val as u64));
                     }
                     (0, 0x14) => {
                         let s1 = self.read_f32(rs1);
