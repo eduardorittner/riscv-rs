@@ -2,7 +2,16 @@ use crate::cpu::Cpu;
 use crate::host_imports;
 use crate::memory::MemoryOps;
 
-pub fn handle_ecall<M: MemoryOps>(cpu: &mut Cpu, mem: &mut M) {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnknownSyscall {
+    pub sys_num: u32,
+    pub a0: u32,
+    pub a1: u32,
+    pub a2: u32,
+    pub a3: u32,
+}
+
+pub fn handle_ecall<M: MemoryOps>(cpu: &mut Cpu, mem: &mut M) -> Result<(), UnknownSyscall> {
     let a7 = cpu.read_reg(17); // Syscall number in x17/a7
     let a0 = cpu.read_reg(10); // Arg 0 / Return val in x10/a0
     let a1 = cpu.read_reg(11); // Arg 1 in x11/a1
@@ -15,7 +24,7 @@ pub fn handle_ecall<M: MemoryOps>(cpu: &mut Cpu, mem: &mut M) {
     {
         if res != 0 {
             cpu.write_reg(10, res as u32);
-            return;
+            return Ok(());
         }
     }
 
@@ -25,6 +34,7 @@ pub fn handle_ecall<M: MemoryOps>(cpu: &mut Cpu, mem: &mut M) {
         93 | 10 | 1 => {
             cpu.is_halted = true;
             cpu.exit_code = a0 as i32;
+            Ok(())
         }
 
         // SYS_write (64 or 4)
@@ -44,6 +54,7 @@ pub fn handle_ecall<M: MemoryOps>(cpu: &mut Cpu, mem: &mut M) {
                 host_imports::js_print_err(&text);
             }
             cpu.write_reg(10, a2); // Return number of bytes written
+            Ok(())
         }
 
         // SYS_read (63 or 3)
@@ -60,6 +71,7 @@ pub fn handle_ecall<M: MemoryOps>(cpu: &mut Cpu, mem: &mut M) {
             } else {
                 cpu.write_reg(10, 0);
             }
+            Ok(())
         }
 
         // SYS_brk (214 or 45)
@@ -68,15 +80,21 @@ pub fn handle_ecall<M: MemoryOps>(cpu: &mut Cpu, mem: &mut M) {
                 mem.set_brk(a0);
             }
             cpu.write_reg(10, mem.get_brk());
+            Ok(())
         }
 
         // SYS_close (57), SYS_lseek (62), SYS_fstat (80)
         57 | 62 | 80 => {
             cpu.write_reg(10, 0);
+            Ok(())
         }
 
-        _ => {
-            cpu.write_reg(10, 0);
-        }
+        _ => Err(UnknownSyscall {
+            sys_num: a7,
+            a0,
+            a1,
+            a2,
+            a3,
+        }),
     }
 }

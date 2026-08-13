@@ -41,6 +41,9 @@ mod ffi {
 
         #[wasm_bindgen(js_name = jsPrintErr)]
         pub fn js_print_err(msg: &str);
+
+        #[wasm_bindgen(js_name = notifyUnknownSyscall)]
+        pub fn notify_unknown_syscall(sys_num: u32, a0: u32, a1: u32, a2: u32, a3: u32);
     }
 }
 
@@ -287,5 +290,16 @@ pub fn js_print_err(msg: &str) {
     #[cfg(target_arch = "wasm32")]
     {
         ffi::js_print_err(msg);
+    }
+}
+
+pub fn notify_unknown_syscall(sys_num: u32, a0: u32, a1: u32, a2: u32, a3: u32) {
+    #[cfg(target_arch = "wasm32")]
+    {
+        ffi::notify_unknown_syscall(sys_num, a0, a1, a2, a3);
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = (sys_num, a0, a1, a2, a3);
     }
 }

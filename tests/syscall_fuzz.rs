@@ -30,7 +30,7 @@ proptest! {
         cpu.write_reg(13, arg3);
 
         let res = catch_unwind(AssertUnwindSafe(|| {
-            handle_ecall(&mut cpu, &mut mem);
+            let _ = handle_ecall(&mut cpu, &mut mem);
         }));
         prop_assert!(res.is_ok(), "Host panicked during syscall {}", sys_num);
     }
@@ -58,7 +58,7 @@ proptest! {
         cpu.write_reg(12, count as u32);
 
         let res = catch_unwind(AssertUnwindSafe(|| {
-            handle_ecall(&mut cpu, &mut mem);
+            let _ = handle_ecall(&mut cpu, &mut mem);
         }));
         prop_assert!(res.is_ok(), "SYS_write panicked");
 
@@ -97,7 +97,7 @@ proptest! {
         cpu.write_reg(12, count);
 
         let res = catch_unwind(AssertUnwindSafe(|| {
-            handle_ecall(&mut cpu, &mut mem);
+            let _ = handle_ecall(&mut cpu, &mut mem);
         }));
         prop_assert!(res.is_ok(), "SYS_read panicked");
 
@@ -128,7 +128,7 @@ proptest! {
             cpu.write_reg(10, req_a0);
 
             let res = catch_unwind(AssertUnwindSafe(|| {
-                handle_ecall(&mut cpu, &mut mem);
+                let _ = handle_ecall(&mut cpu, &mut mem);
             }));
             prop_assert!(res.is_ok(), "SYS_brk panicked");
 
@@ -165,7 +165,7 @@ proptest! {
         cpu.write_reg(10, 42);
 
         let res = catch_unwind(AssertUnwindSafe(|| {
-            handle_ecall(&mut cpu, &mut mem);
+            let _ = handle_ecall(&mut cpu, &mut mem);
         }));
         prop_assert!(res.is_ok(), "custom_syscall hook panicked");
 
@@ -173,4 +173,31 @@ proptest! {
             prop_assert_eq!(cpu.read_reg(10), hook_return as u32);
         }
     }
+}
+
+#[test]
+fn test_unknown_syscall_returns_error() {
+    use riscv_rs::syscall::{handle_ecall, UnknownSyscall};
+    use riscv_rs::{Cpu, Memory};
+
+    let mut cpu = Cpu::new();
+    let mut mem = Memory::new();
+
+    cpu.write_reg(17, 999); // Unknown syscall number
+    cpu.write_reg(10, 0x11); // a0
+    cpu.write_reg(11, 0x22); // a1
+    cpu.write_reg(12, 0x33); // a2
+    cpu.write_reg(13, 0x44); // a3
+
+    let result = handle_ecall(&mut cpu, &mut mem);
+    assert_eq!(
+        result,
+        Err(UnknownSyscall {
+            sys_num: 999,
+            a0: 0x11,
+            a1: 0x22,
+            a2: 0x33,
+            a3: 0x44,
+        })
+    );
 }

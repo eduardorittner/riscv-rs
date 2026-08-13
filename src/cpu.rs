@@ -24,6 +24,7 @@ pub enum CpuError {
     UnalignedAccess { pc: u32, addr: u32 },
     MemoryFault { pc: u32, addr: u32 },
     UnhandledSyscall { pc: u32, number: i32 },
+    UnknownSyscall(crate::syscall::UnknownSyscall),
     ExecutionError(String),
 }
 
@@ -52,6 +53,13 @@ impl std::fmt::Display for CpuError {
             }
             Self::UnhandledSyscall { pc, number } => {
                 write!(f, "Unhandled syscall {} at PC {:#010x}", number, pc)
+            }
+            Self::UnknownSyscall(sys) => {
+                write!(
+                    f,
+                    "Unknown syscall {} (a0: {:#x}, a1: {:#x}, a2: {:#x}, a3: {:#x})",
+                    sys.sys_num, sys.a0, sys.a1, sys.a2, sys.a3
+                )
             }
             Self::ExecutionError(msg) => write!(f, "{}", msg),
         }
@@ -128,7 +136,21 @@ impl Cpu {
 
         self.step_counter += 1;
 
-        if let Err(_err) = instruction_result {
+        if let Err(err) = instruction_result {
+            if let CpuError::UnknownSyscall(ref sys_err) = err {
+                host_imports::js_print_err(&format!(
+                    "Unknown Syscall: {} (a0: {:#x}, a1: {:#x}, a2: {:#x}, a3: {:#x})",
+                    sys_err.sys_num, sys_err.a0, sys_err.a1, sys_err.a2, sys_err.a3
+                ));
+                host_imports::notify_unknown_syscall(
+                    sys_err.sys_num,
+                    sys_err.a0,
+                    sys_err.a1,
+                    sys_err.a2,
+                    sys_err.a3,
+                );
+                self.is_halted = true;
+            }
             return StepResult::Trap(pc);
         }
 
@@ -220,20 +242,48 @@ impl Cpu {
             // Compressed instruction (16-bit) if lower 2 bits are not 0b11
             if (inst16 & 0x3) != 0x3 {
                 if let Err(e) = self.execute_inst16(inst16, mem) {
-                    host_imports::js_print_err(&format!(
-                        "CPU Exec Error (Compressed) at PC {:#010x}: {}",
-                        pc, e
-                    ));
+                    if let CpuError::UnknownSyscall(ref sys_err) = e {
+                        host_imports::js_print_err(&format!(
+                            "Unknown Syscall: {} (a0: {:#x}, a1: {:#x}, a2: {:#x}, a3: {:#x})",
+                            sys_err.sys_num, sys_err.a0, sys_err.a1, sys_err.a2, sys_err.a3
+                        ));
+                        host_imports::notify_unknown_syscall(
+                            sys_err.sys_num,
+                            sys_err.a0,
+                            sys_err.a1,
+                            sys_err.a2,
+                            sys_err.a3,
+                        );
+                    } else {
+                        host_imports::js_print_err(&format!(
+                            "CPU Exec Error (Compressed) at PC {:#010x}: {}",
+                            pc, e
+                        ));
+                    }
                     self.is_halted = true;
                     break;
                 }
             } else {
                 let inst32 = mem.read_u32(pc);
                 if let Err(e) = self.execute_inst32(inst32, mem) {
-                    host_imports::js_print_err(&format!(
-                        "CPU Exec Error at PC {:#010x}: {}",
-                        pc, e
-                    ));
+                    if let CpuError::UnknownSyscall(ref sys_err) = e {
+                        host_imports::js_print_err(&format!(
+                            "Unknown Syscall: {} (a0: {:#x}, a1: {:#x}, a2: {:#x}, a3: {:#x})",
+                            sys_err.sys_num, sys_err.a0, sys_err.a1, sys_err.a2, sys_err.a3
+                        ));
+                        host_imports::notify_unknown_syscall(
+                            sys_err.sys_num,
+                            sys_err.a0,
+                            sys_err.a1,
+                            sys_err.a2,
+                            sys_err.a3,
+                        );
+                    } else {
+                        host_imports::js_print_err(&format!(
+                            "CPU Exec Error at PC {:#010x}: {}",
+                            pc, e
+                        ));
+                    }
                     self.is_halted = true;
                     break;
                 }
@@ -971,7 +1021,7 @@ impl Cpu {
             let imm12 = inst.raw >> 20;
             if imm12 == 0 {
                 // ECALL
-                handle_ecall(self, mem);
+                handle_ecall(self, mem).map_err(CpuError::UnknownSyscall)?;
             } else if imm12 == 1 {
                 // EBREAK
                 self.is_halted = true;
