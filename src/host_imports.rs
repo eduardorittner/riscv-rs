@@ -6,8 +6,8 @@ mod ffi {
 
     #[wasm_bindgen]
     extern "C" {
-        #[wasm_bindgen(js_name = customSyscall, catch)]
-        pub fn custom_syscall(a0: i32, a1: i32, a2: i32, a3: i32, a7: i32) -> Result<i32, JsValue>;
+        #[wasm_bindgen(js_name = customSyscall)]
+        pub fn custom_syscall(a0: i32, a1: i32, a2: i32, a3: i32, a7: i32) -> i32;
 
         #[wasm_bindgen(js_name = jsExternalInterrupt)]
         pub fn js_external_interrupt() -> i32;
@@ -51,7 +51,7 @@ mod ffi {
 use std::cell::RefCell;
 
 #[cfg(any(test, not(target_arch = "wasm32")))]
-type CustomSyscallFn = Box<dyn Fn(i32, i32, i32, i32, i32) -> Result<i32, JsValue>>;
+type CustomSyscallFn = Box<dyn Fn(i32, i32, i32, i32, i32) -> i32>;
 #[cfg(any(test, not(target_arch = "wasm32")))]
 type MmioReadFn = Box<dyn Fn(u32, u32) -> u32>;
 #[cfg(any(test, not(target_arch = "wasm32")))]
@@ -71,7 +71,7 @@ std::thread_local! {
 pub fn reset_mocks() {
     MOCK_STDOUT.with(|s| s.borrow_mut().clear());
     MOCK_STDERR.with(|s| s.borrow_mut().clear());
-    MOCK_STDIN.with(|s| s.borrow_mut().clear());
+    MOCK_STDIN.with(|s| *s.borrow_mut() = Vec::new());
     MOCK_CUSTOM_SYSCALL.with(|s| *s.borrow_mut() = None);
     MOCK_MMIO_READ.with(|s| *s.borrow_mut() = None);
     MOCK_MMIO_WRITE.with(|s| *s.borrow_mut() = None);
@@ -95,7 +95,7 @@ pub fn set_mock_stdin(bytes: &[u8]) {
 #[cfg(any(test, not(target_arch = "wasm32")))]
 pub fn set_mock_custom_syscall<F>(f: F)
 where
-    F: Fn(i32, i32, i32, i32, i32) -> Result<i32, JsValue> + 'static,
+    F: Fn(i32, i32, i32, i32, i32) -> i32 + 'static,
 {
     MOCK_CUSTOM_SYSCALL.with(|s| *s.borrow_mut() = Some(Box::new(f)));
 }
@@ -116,7 +116,7 @@ where
     MOCK_MMIO_WRITE.with(|s| *s.borrow_mut() = Some(Box::new(f)));
 }
 
-pub fn custom_syscall(a0: i32, a1: i32, a2: i32, a3: i32, a7: i32) -> Result<i32, JsValue> {
+pub fn custom_syscall(a0: i32, a1: i32, a2: i32, a3: i32, a7: i32) -> i32 {
     #[cfg(any(test, not(target_arch = "wasm32")))]
     {
         let handled =
@@ -131,7 +131,7 @@ pub fn custom_syscall(a0: i32, a1: i32, a2: i32, a3: i32, a7: i32) -> Result<i32
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
-        Err(JsValue::NULL)
+        0
     }
 }
 

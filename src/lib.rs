@@ -54,6 +54,14 @@ impl Simulator {
         }
     }
 
+    pub fn set_has_custom_syscalls(&mut self, enabled: bool) {
+        self.cpu.has_custom_syscalls = enabled;
+    }
+
+    pub fn has_custom_syscalls(&self) -> bool {
+        self.cpu.has_custom_syscalls
+    }
+
     pub fn load_binary(&mut self, binary_bytes: &[u8], args_js: js_sys::Array) -> u32 {
         let mut args = Vec::new();
         for i in 0..args_js.length() {

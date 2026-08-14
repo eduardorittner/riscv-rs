@@ -93,6 +93,7 @@ pub struct Cpu {
     pub debug_enabled: bool,
     pub breakpoints: std::collections::HashSet<u32>,
     pub step_counter: u64,
+    pub has_custom_syscalls: bool,
 }
 
 impl Default for Cpu {
@@ -114,6 +115,7 @@ impl Cpu {
             debug_enabled: false,
             breakpoints: std::collections::HashSet::new(),
             step_counter: 0,
+            has_custom_syscalls: false,
         };
         // Default Stack Pointer sp (x2) if not set by CLI
         cpu.regs[2] = 0x7FFFFFC;

@@ -156,10 +156,11 @@ proptest! {
         sys_num in 0..100u32,
     ) {
         reset_mocks();
-        set_mock_custom_syscall(move |_a0, _a1, _a2, _a3, _a7| Ok(hook_return));
+        set_mock_custom_syscall(move |_a0, _a1, _a2, _a3, _a7| hook_return);
 
         let mut cpu = Cpu::new();
         let mut mem = Memory::new();
+        cpu.has_custom_syscalls = true;
 
         cpu.write_reg(17, sys_num);
         cpu.write_reg(10, 42);
@@ -173,6 +174,44 @@ proptest! {
             prop_assert_eq!(cpu.read_reg(10), hook_return as u32);
         }
     }
+}
+
+#[test]
+fn test_custom_syscall_disabled_by_default() {
+    use riscv_rs::host_imports::{reset_mocks, set_mock_custom_syscall};
+    use riscv_rs::syscall::{handle_ecall, UnknownSyscall};
+    use riscv_rs::{Cpu, Memory};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    reset_mocks();
+    let called = Arc::new(AtomicBool::new(false));
+    let called_clone = Arc::clone(&called);
+    set_mock_custom_syscall(move |_a0, _a1, _a2, _a3, _a7| {
+        called_clone.store(true, Ordering::SeqCst);
+        999
+    });
+
+    let mut cpu = Cpu::new();
+    let mut mem = Memory::new();
+    assert!(!cpu.has_custom_syscalls);
+
+    cpu.write_reg(17, 999); // Unknown syscall number
+    cpu.write_reg(10, 42);
+
+    let result = handle_ecall(&mut cpu, &mut mem);
+    // Custom hook should NOT be called because cpu.has_custom_syscalls is false
+    assert!(!called.load(Ordering::SeqCst));
+    assert_eq!(
+        result,
+        Err(UnknownSyscall {
+            sys_num: 999,
+            a0: 42,
+            a1: 0,
+            a2: 0,
+            a3: 0,
+        })
+    );
 }
 
 #[test]
@@ -200,4 +239,40 @@ fn test_unknown_syscall_returns_error() {
             a3: 0x44,
         })
     );
+}
+
+#[test]
+fn test_ecall_dispatch_timing() {
+    use std::time::Instant;
+    use riscv_rs::syscall::handle_ecall;
+    use riscv_rs::host_imports::{reset_mocks, set_mock_custom_syscall};
+    use riscv_rs::{Cpu, Memory};
+
+    reset_mocks();
+    let mut mem = Memory::new();
+    let mut cpu_disabled = Cpu::new();
+    cpu_disabled.has_custom_syscalls = false;
+    cpu_disabled.write_reg(17, 214); // SYS_brk
+    cpu_disabled.write_reg(10, 0);
+
+    let start = Instant::now();
+    for _ in 0..100_000 {
+        let _ = handle_ecall(&mut cpu_disabled, &mut mem);
+    }
+    let dur_disabled = start.elapsed();
+
+    let mut cpu_enabled = Cpu::new();
+    cpu_enabled.has_custom_syscalls = true;
+    cpu_enabled.write_reg(17, 214);
+    cpu_enabled.write_reg(10, 0);
+    set_mock_custom_syscall(|_a0, _a1, _a2, _a3, _a7| 0); // returns 0 (falls through)
+
+    let start2 = Instant::now();
+    for _ in 0..100_000 {
+        let _ = handle_ecall(&mut cpu_enabled, &mut mem);
+    }
+    let dur_enabled = start2.elapsed();
+
+    println!("100k ecall with has_custom_syscalls=false: {:?} ({:?}/ecall)", dur_disabled, dur_disabled / 100_000);
+    println!("100k ecall with has_custom_syscalls=true (hook): {:?} ({:?}/ecall)", dur_enabled, dur_enabled / 100_000);
 }

@@ -19,10 +19,10 @@ pub fn handle_ecall<M: MemoryOps>(cpu: &mut Cpu, mem: &mut M) -> Result<(), Unkn
     let a2 = cpu.read_reg(A2); // Arg 2
     let a3 = cpu.read_reg(A3); // Arg 3
 
-    // Try host custom syscall handler first
-    if let Ok(res) =
-        host_imports::custom_syscall(a0 as i32, a1 as i32, a2 as i32, a3 as i32, a7 as i32)
-    {
+    // Try host custom syscall handler first if enabled
+    if cpu.has_custom_syscalls {
+        let res =
+            host_imports::custom_syscall(a0 as i32, a1 as i32, a2 as i32, a3 as i32, a7 as i32);
         if res != 0 {
             cpu.write_reg(A0, res as u32);
             return Ok(());
