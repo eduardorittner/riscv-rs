@@ -17,6 +17,12 @@ const MCAUSE: u16 = 0x341;
 /// Address of the trap-handler's first instruction.
 const MTVEC: u16 = 0x305;
 
+pub const A0: usize = 10;
+pub const A1: usize = 11;
+pub const A2: usize = 12;
+pub const A3: usize = 13;
+pub const A7: usize = 17;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CpuError {
     IllegalInstruction { pc: u32, raw: u32 },

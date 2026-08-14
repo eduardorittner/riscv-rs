@@ -1,8 +1,9 @@
-use crate::cpu::Cpu;
+use crate::cpu::{Cpu, A0, A1, A2, A3, A7};
 use crate::host_imports;
 use crate::memory::MemoryOps;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Unknown syscall number along with the passed arguments
 pub struct UnknownSyscall {
     pub sys_num: u32,
     pub a0: u32,
@@ -12,32 +13,32 @@ pub struct UnknownSyscall {
 }
 
 pub fn handle_ecall<M: MemoryOps>(cpu: &mut Cpu, mem: &mut M) -> Result<(), UnknownSyscall> {
-    let a7 = cpu.read_reg(17); // Syscall number in x17/a7
-    let a0 = cpu.read_reg(10); // Arg 0 / Return val in x10/a0
-    let a1 = cpu.read_reg(11); // Arg 1 in x11/a1
-    let a2 = cpu.read_reg(12); // Arg 2 in x12/a2
-    let a3 = cpu.read_reg(13); // Arg 3 in x13/a3
+    let a7 = cpu.read_reg(A7); // Syscall number
+    let a0 = cpu.read_reg(A0); // Arg 0 / Return val
+    let a1 = cpu.read_reg(A1); // Arg 1
+    let a2 = cpu.read_reg(A2); // Arg 2
+    let a3 = cpu.read_reg(A3); // Arg 3
 
-    // 1. Try host custom syscall handler first
+    // Try host custom syscall handler first
     if let Ok(res) =
         host_imports::custom_syscall(a0 as i32, a1 as i32, a2 as i32, a3 as i32, a7 as i32)
     {
         if res != 0 {
-            cpu.write_reg(10, res as u32);
+            cpu.write_reg(A0, res as u32);
             return Ok(());
         }
     }
 
-    // 2. Fall back to standard Newlib POSIX syscalls
+    // Fall back to our own implementation
     match a7 {
-        // SYS_exit (93 or 10 or 1)
+        // SYS_exit
         93 | 10 | 1 => {
             cpu.is_halted = true;
             cpu.exit_code = a0 as i32;
             Ok(())
         }
 
-        // SYS_write (64 or 4)
+        // SYS_write
         64 | 4 => {
             let fd = a0;
             let buf_ptr = a1;
@@ -57,7 +58,7 @@ pub fn handle_ecall<M: MemoryOps>(cpu: &mut Cpu, mem: &mut M) -> Result<(), Unkn
             Ok(())
         }
 
-        // SYS_read (63 or 3)
+        // SYS_read
         63 | 3 => {
             let _fd = a0;
             let buf_ptr = a1;
@@ -74,7 +75,7 @@ pub fn handle_ecall<M: MemoryOps>(cpu: &mut Cpu, mem: &mut M) -> Result<(), Unkn
             Ok(())
         }
 
-        // SYS_brk (214 or 45)
+        // SYS_brk
         214 | 45 => {
             if a0 != 0 {
                 mem.set_brk(a0);
