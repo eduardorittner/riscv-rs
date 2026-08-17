@@ -10,18 +10,81 @@ use std::collections::HashMap;
 const NAN_F32: u32 = 0x7FC00000;
 const NAN_F64: u64 = 0xFFFFFFFF7FC00000;
 
+/// Machine status: holds the global interrupt-enable state (MIE, bit 3) and its
+/// saved copy (MPIE, bit 7).
+const MSTATUS: u16 = 0x300;
 /// Address of the first instruction to be executed after handling the current trap.
 const MEPC: u16 = 0x341;
 /// Event type that caused the current trap.
-const MCAUSE: u16 = 0x341;
+const MCAUSE: u16 = 0x342;
 /// Address of the trap-handler's first instruction.
 const MTVEC: u16 = 0x305;
+
+/// `mstatus.MIE` — the global machine-mode interrupt enable.
+const MSTATUS_MIE: u32 = 1 << 3;
+/// `mstatus.MPIE` — the value `MIE` held before the current trap was taken.
+const MSTATUS_MPIE: u32 = 1 << 7;
 
 pub const A0: usize = 10;
 pub const A1: usize = 11;
 pub const A2: usize = 12;
 pub const A3: usize = 13;
 pub const A7: usize = 17;
+
+/// Register number of a 3-bit compressed register field starting at `shift`.
+/// The field selects one of x8..x15.
+#[inline(always)]
+pub(crate) fn creg(inst: u16, shift: u32) -> usize {
+    (inst.shift_then_mask(shift, 0x7) + 8) as usize
+}
+
+/// Word offset of the CL/CS formats (`c.lw`, `c.sw`, `c.flw`, `c.fsw`):
+/// uimm[5:3] = inst[12:10], uimm[2] = inst[6], uimm[6] = inst[5].
+#[inline(always)]
+pub(crate) fn cl_word_offset(inst: u16) -> u32 {
+    ((inst.shift_then_mask(10, 0x7) as u32) << 3)
+        | ((inst.shift_then_mask(6, 0x1) as u32) << 2)
+        | ((inst.shift_then_mask(5, 0x1) as u32) << 6)
+}
+
+/// Doubleword offset of the CL/CS formats (`c.fld`, `c.fsd`):
+/// uimm[5:3] = inst[12:10], uimm[7:6] = inst[6:5].
+#[inline(always)]
+pub(crate) fn cl_double_offset(inst: u16) -> u32 {
+    ((inst.shift_then_mask(10, 0x7) as u32) << 3) | ((inst.shift_then_mask(5, 0x3) as u32) << 6)
+}
+
+/// Stack-relative word offset of the CI format (`c.lwsp`, `c.flwsp`):
+/// uimm[5] = inst[12], uimm[4:2] = inst[6:4], uimm[7:6] = inst[3:2].
+#[inline(always)]
+pub(crate) fn ci_word_sp_offset(inst: u16) -> u32 {
+    ((inst.shift_then_mask(12, 0x1) as u32) << 5)
+        | ((inst.shift_then_mask(4, 0x7) as u32) << 2)
+        | ((inst.shift_then_mask(2, 0x3) as u32) << 6)
+}
+
+/// Stack-relative doubleword offset of the CI format (`c.fldsp`):
+/// uimm[5] = inst[12], uimm[4:3] = inst[6:5], uimm[8:6] = inst[4:2].
+#[inline(always)]
+pub(crate) fn ci_double_sp_offset(inst: u16) -> u32 {
+    ((inst.shift_then_mask(12, 0x1) as u32) << 5)
+        | ((inst.shift_then_mask(5, 0x3) as u32) << 3)
+        | ((inst.shift_then_mask(2, 0x7) as u32) << 6)
+}
+
+/// Stack-relative word offset of the CSS format (`c.swsp`, `c.fswsp`):
+/// uimm[5:2] = inst[12:9], uimm[7:6] = inst[8:7].
+#[inline(always)]
+pub(crate) fn css_word_sp_offset(inst: u16) -> u32 {
+    ((inst.shift_then_mask(9, 0xF) as u32) << 2) | ((inst.shift_then_mask(7, 0x3) as u32) << 6)
+}
+
+/// Stack-relative doubleword offset of the CSS format (`c.fsdsp`):
+/// uimm[5:3] = inst[12:10], uimm[8:6] = inst[9:7].
+#[inline(always)]
+pub(crate) fn css_double_sp_offset(inst: u16) -> u32 {
+    ((inst.shift_then_mask(10, 0x7) as u32) << 3) | ((inst.shift_then_mask(7, 0x7) as u32) << 6)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CpuError {
@@ -94,7 +157,15 @@ pub struct Cpu {
     pub breakpoints: std::collections::HashSet<u32>,
     pub step_counter: u64,
     pub has_custom_syscalls: bool,
+    /// Set when execution stopped on a trap rather than on a clean exit. The
+    /// debugger snapshot carries it so the UI never reports a crash as success.
+    pub trapped: bool,
 }
+
+/// Exit code reported when the guest stops on a trap. It matches the shell
+/// convention for "terminated by a fault" and is simply any nonzero value that
+/// a normal `exit()` is unlikely to produce.
+pub const TRAP_EXIT_CODE: i32 = 134;
 
 impl Default for Cpu {
     fn default() -> Self {
@@ -116,6 +187,7 @@ impl Cpu {
             breakpoints: std::collections::HashSet::new(),
             step_counter: 0,
             has_custom_syscalls: false,
+            trapped: false,
         };
         // Default Stack Pointer sp (x2) if not set by CLI
         cpu.regs[2] = 0x7FFFFFC;
@@ -157,8 +229,14 @@ impl Cpu {
                     sys_err.a2,
                     sys_err.a3,
                 );
-                self.is_halted = true;
+            } else {
+                host_imports::js_print_err(&format!("CPU Exec Error at PC {:#010x}: {}", pc, err));
             }
+            // Every trap stops the machine. Without this the debugger would
+            // hand back the same snapshot for ever on a faulting instruction.
+            self.trapped = true;
+            self.exit_code = TRAP_EXIT_CODE;
+            self.is_halted = true;
             return StepResult::Trap(pc);
         }
 
@@ -236,7 +314,7 @@ impl Cpu {
                     interrupt_delay = 1000;
                 }
 
-                if host_imports::js_interrupt_enabled() != 0 {
+                if host_imports::js_interrupt_enabled() != 0 && self.interrupts_enabled() {
                     let irq = host_imports::js_external_interrupt();
                     if irq != 0 {
                         self.handle_interrupt(irq);
@@ -268,6 +346,8 @@ impl Cpu {
                             pc, e
                         ));
                     }
+                    self.trapped = true;
+                    self.exit_code = TRAP_EXIT_CODE;
                     self.is_halted = true;
                     break;
                 }
@@ -292,6 +372,8 @@ impl Cpu {
                             pc, e
                         ));
                     }
+                    self.trapped = true;
+                    self.exit_code = TRAP_EXIT_CODE;
                     self.is_halted = true;
                     break;
                 }
@@ -307,10 +389,10 @@ impl Cpu {
     }
 
     pub fn get_snapshot_js(&self, is_breakpoint: bool, hit_address: u32) -> JsValue {
-        let mstatus = *self.csrs.get(&0x300).unwrap_or(&0);
-        let mcause = *self.csrs.get(&0x342).unwrap_or(&0);
-        let mepc = *self.csrs.get(&0x341).unwrap_or(&0);
-        let mtvec = *self.csrs.get(&0x305).unwrap_or(&0);
+        let mstatus = *self.csrs.get(&MSTATUS).unwrap_or(&0);
+        let mcause = *self.csrs.get(&MCAUSE).unwrap_or(&0);
+        let mepc = *self.csrs.get(&MEPC).unwrap_or(&0);
+        let mtvec = *self.csrs.get(&MTVEC).unwrap_or(&0);
         let fcsr = self.fcsr;
 
         let snapshot = DebuggerSnapshot {
@@ -322,13 +404,31 @@ impl Cpu {
             is_halted: self.is_halted,
             is_breakpoint,
             hit_address,
+            exit_code: self.exit_code,
+            trapped: self.trapped,
         };
         serde_wasm_bindgen::to_value(&snapshot).unwrap_or(JsValue::NULL)
     }
 
-    fn handle_interrupt(&mut self, irq: i32) {
+    /// True when `mstatus.MIE` allows machine-mode interrupts to be delivered.
+    #[inline(always)]
+    pub fn interrupts_enabled(&self) -> bool {
+        (*self.csrs.get(&MSTATUS).unwrap_or(&0) & MSTATUS_MIE) != 0
+    }
+
+    /// Take an external machine interrupt: save the interrupted PC and the
+    /// interrupt-enable state, then vector to `mtvec`.
+    pub fn handle_interrupt(&mut self, irq: i32) {
         self.csrs.insert(MEPC, self.pc);
         self.csrs.insert(MCAUSE, 0x80000000 | (irq as u32));
+        // Save MIE into MPIE and disable interrupts for the duration of the
+        // handler, so a second interrupt cannot overwrite mepc.
+        let mstatus = *self.csrs.get(&MSTATUS).unwrap_or(&0);
+        let mut new_mstatus = mstatus & !(MSTATUS_MIE | MSTATUS_MPIE);
+        if (mstatus & MSTATUS_MIE) != 0 {
+            new_mstatus |= MSTATUS_MPIE;
+        }
+        self.csrs.insert(MSTATUS, new_mstatus);
         if let Some(&mtvec) = self.csrs.get(&MTVEC) {
             self.pc = mtvec;
         }
@@ -1034,10 +1134,17 @@ impl Cpu {
                 // EBREAK
                 self.is_halted = true;
             } else if imm12 == 0x302 {
-                // MRET: set PC to mepc
-                if let Some(&mepc) = self.csrs.get(&0x341) {
+                // MRET: return to mepc and restore MIE from MPIE, which is then
+                // set back to 1 as the privileged specification requires.
+                if let Some(&mepc) = self.csrs.get(&MEPC) {
                     *next_pc = mepc;
                 }
+                let mstatus = *self.csrs.get(&MSTATUS).unwrap_or(&0);
+                let mut new_mstatus = (mstatus & !MSTATUS_MIE) | MSTATUS_MPIE;
+                if (mstatus & MSTATUS_MPIE) != 0 {
+                    new_mstatus |= MSTATUS_MIE;
+                }
+                self.csrs.insert(MSTATUS, new_mstatus);
             }
         } else {
             // CSR instructions
@@ -1067,37 +1174,68 @@ impl Cpu {
         match (decoded.op, decoded.funct3) {
             // Quadrant 0
             (0, 0) => {
-                // C.ADDI4SPN
-                let rdc = ((inst.shift_then_mask(2, 0x7)) + 8) as usize;
+                // C.ADDI4SPN. The all-zero immediate is a reserved encoding, and
+                // the all-zero halfword is the canonical illegal instruction.
+                let rdc = creg(inst, 2);
                 let imm = (inst.shift_then_mask(7, 0x30)
                     | inst.shift_then_mask(1, 0x3C0)
                     | inst.shift_then_mask(4, 0x4)
                     | inst.shift_then_mask(2, 0x8)) as u32;
-                if imm != 0 {
-                    self.write_reg(rdc, self.read_reg(2).wrapping_add(imm));
+                if imm == 0 {
+                    return Err(CpuError::IllegalInstruction {
+                        pc: self.pc,
+                        raw: inst as u32,
+                    });
                 }
+                self.write_reg(rdc, self.read_reg(2).wrapping_add(imm));
+            }
+            (0, 1) => {
+                // C.FLD
+                let rdc = creg(inst, 2);
+                let rs1c = creg(inst, 7);
+                let addr = self.read_reg(rs1c).wrapping_add(cl_double_offset(inst));
+                let low = mem.read_u32(addr) as u64;
+                let high = mem.read_u32(addr.wrapping_add(4)) as u64;
+                self.write_f64(rdc, f64::from_bits((high << 32) | low));
             }
             (0, 2) => {
                 // C.LW
-                let rdc = ((inst.shift_then_mask(2, 0x7)) + 8) as usize;
-                let rs1c = ((inst.shift_then_mask(7, 0x7)) + 8) as usize;
-                let offset = (inst.shift_then_mask(6, 0x4)
-                    | inst.shift_then_mask(10, 0x38)
-                    | inst.shift_then_mask(3, 0x40)
-                    | inst.shift_then_mask(2, 0x8)) as u32;
-                let addr = self.read_reg(rs1c).wrapping_add(offset);
+                let rdc = creg(inst, 2);
+                let rs1c = creg(inst, 7);
+                let addr = self.read_reg(rs1c).wrapping_add(cl_word_offset(inst));
                 self.write_reg(rdc, mem.read_u32(addr));
+            }
+            (0, 3) => {
+                // C.FLW
+                let rdc = creg(inst, 2);
+                let rs1c = creg(inst, 7);
+                let addr = self.read_reg(rs1c).wrapping_add(cl_word_offset(inst));
+                let raw = mem.read_u32(addr);
+                self.fregs[rdc] = f64::from_bits(0xFFFFFFFF00000000u64 | (raw as u64));
+            }
+            (0, 5) => {
+                // C.FSD
+                let rs2c = creg(inst, 2);
+                let rs1c = creg(inst, 7);
+                let addr = self.read_reg(rs1c).wrapping_add(cl_double_offset(inst));
+                let bits = self.read_f64(rs2c).to_bits();
+                mem.write_u32(addr, bits as u32);
+                mem.write_u32(addr.wrapping_add(4), (bits >> 32) as u32);
             }
             (0, 6) => {
                 // C.SW
-                let rs2c = ((inst.shift_then_mask(2, 0x7)) + 8) as usize;
-                let rs1c = ((inst.shift_then_mask(7, 0x7)) + 8) as usize;
-                let offset = (inst.shift_then_mask(6, 0x4)
-                    | inst.shift_then_mask(10, 0x38)
-                    | inst.shift_then_mask(3, 0x40)
-                    | inst.shift_then_mask(2, 0x8)) as u32;
-                let addr = self.read_reg(rs1c).wrapping_add(offset);
+                let rs2c = creg(inst, 2);
+                let rs1c = creg(inst, 7);
+                let addr = self.read_reg(rs1c).wrapping_add(cl_word_offset(inst));
                 mem.write_u32(addr, self.read_reg(rs2c));
+            }
+            (0, 7) => {
+                // C.FSW
+                let rs2c = creg(inst, 2);
+                let rs1c = creg(inst, 7);
+                let addr = self.read_reg(rs1c).wrapping_add(cl_word_offset(inst));
+                let bits = (self.fregs[rs2c].to_bits() & 0xFFFFFFFF) as u32;
+                mem.write_u32(addr, bits);
             }
 
             // Quadrant 1
@@ -1135,22 +1273,95 @@ impl Cpu {
                 // C.ADDI16SP / C.LUI
                 let rd = inst.shift_then_mask(7, 0x1F) as usize;
                 if rd == 2 {
-                    // C.ADDI16SP
+                    // C.ADDI16SP. The immediate already carries its scale: the
+                    // encoded bits are nzimm[9:4], so it is only sign extended
+                    // from bit 9 and never shifted again.
                     let imm = (inst.shift_then_mask(12, 1) << 9)
                         | (inst.shift_then_mask(3, 3) << 7)
                         | (inst.shift_then_mask(5, 1) << 6)
                         | (inst.shift_then_mask(2, 1) << 5)
                         | (inst.shift_then_mask(6, 1) << 4);
+                    if imm == 0 {
+                        return Err(CpuError::IllegalInstruction {
+                            pc: self.pc,
+                            raw: inst as u32,
+                        });
+                    }
                     let offset = ((imm as i16) << 6) >> 6;
-                    self.write_reg(
-                        2,
-                        self.read_reg(2).wrapping_add((offset as i32 as u32) << 4),
-                    );
+                    self.write_reg(2, self.read_reg(2).wrapping_add(offset as i32 as u32));
                 } else if rd != 0 {
-                    // C.LUI
+                    // C.LUI. A zero immediate is a reserved encoding.
                     let imm6 = (inst.shift_then_mask(12, 1) << 5) | inst.shift_then_mask(2, 0x1F);
+                    if imm6 == 0 {
+                        return Err(CpuError::IllegalInstruction {
+                            pc: self.pc,
+                            raw: inst as u32,
+                        });
+                    }
                     let sign_ext = ((imm6 as i16) << 10) >> 10;
                     self.write_reg(rd, (sign_ext as i32 as u32) << 12);
+                } else {
+                    // rd = x0 is reserved in this group.
+                    return Err(CpuError::IllegalInstruction {
+                        pc: self.pc,
+                        raw: inst as u32,
+                    });
+                }
+            }
+            (1, 4) => {
+                // C.SRLI / C.SRAI / C.ANDI / C.SUB / C.XOR / C.OR / C.AND
+                let rdc = creg(inst, 7);
+                let bit12 = inst.shift_then_mask(12, 1);
+                match inst.shift_then_mask(10, 0x3) {
+                    0 | 1 => {
+                        // C.SRLI / C.SRAI. RV32C requires shamt[5] to be zero;
+                        // the shamt[5] = 1 code points are reserved.
+                        if bit12 != 0 {
+                            return Err(CpuError::IllegalInstruction {
+                                pc: self.pc,
+                                raw: inst as u32,
+                            });
+                        }
+                        // shamt = 0 encodes the RV128 c.srli64/c.srai64 hints,
+                        // which act as a no-op here.
+                        let shamt = inst.shift_then_mask(2, 0x1F) as u32;
+                        if shamt != 0 {
+                            let src = self.read_reg(rdc);
+                            let val = if inst.shift_then_mask(10, 0x3) == 0 {
+                                src >> shamt
+                            } else {
+                                ((src as i32) >> shamt) as u32
+                            };
+                            self.write_reg(rdc, val);
+                        }
+                    }
+                    2 => {
+                        // C.ANDI
+                        let imm6 =
+                            (inst.shift_then_mask(12, 1) << 5) | inst.shift_then_mask(2, 0x1F);
+                        let sign_ext = ((imm6 as i16) << 10) >> 10;
+                        self.write_reg(rdc, self.read_reg(rdc) & (sign_ext as i32 as u32));
+                    }
+                    _ => {
+                        // bit 12 selects the RV64-only C.SUBW / C.ADDW group,
+                        // whose four code points are all reserved on RV32.
+                        if bit12 != 0 {
+                            return Err(CpuError::IllegalInstruction {
+                                pc: self.pc,
+                                raw: inst as u32,
+                            });
+                        }
+                        let rs2c = creg(inst, 2);
+                        let src1 = self.read_reg(rdc);
+                        let src2 = self.read_reg(rs2c);
+                        let val = match inst.shift_then_mask(5, 0x3) {
+                            0 => src1.wrapping_sub(src2), // C.SUB
+                            1 => src1 ^ src2,             // C.XOR
+                            2 => src1 | src2,             // C.OR
+                            _ => src1 & src2,             // C.AND
+                        };
+                        self.write_reg(rdc, val);
+                    }
                 }
             }
             (1, 5) => {
@@ -1195,55 +1406,99 @@ impl Cpu {
 
             // Quadrant 2
             (2, 0) => {
-                // C.SLLI
+                // C.SLLI. RV32C requires shamt[5] to be zero.
                 let rd = inst.shift_then_mask(7, 0x1F) as usize;
-                let shamt = (inst.shift_then_mask(12, 1) << 5) | inst.shift_then_mask(2, 0x1F);
-                if rd != 0 {
+                if inst.shift_then_mask(12, 1) != 0 {
+                    return Err(CpuError::IllegalInstruction {
+                        pc: self.pc,
+                        raw: inst as u32,
+                    });
+                }
+                let shamt = inst.shift_then_mask(2, 0x1F) as u32;
+                if rd != 0 && shamt != 0 {
                     self.write_reg(rd, self.read_reg(rd) << shamt);
                 }
             }
-            (2, 2) => {
-                // C.LWSP
+            (2, 1) => {
+                // C.FLDSP
                 let rd = inst.shift_then_mask(7, 0x1F) as usize;
-                let offset = (inst.shift_then_mask(2, 0x1C)
-                    | inst.shift_then_mask(12, 1) << 5
-                    | inst.shift_then_mask(7, 0x3) << 6) as u32;
-                let addr = self.read_reg(2).wrapping_add(offset);
-                if rd != 0 {
-                    self.write_reg(rd, mem.read_u32(addr));
+                let addr = self.read_reg(2).wrapping_add(ci_double_sp_offset(inst));
+                let low = mem.read_u32(addr) as u64;
+                let high = mem.read_u32(addr.wrapping_add(4)) as u64;
+                self.write_f64(rd, f64::from_bits((high << 32) | low));
+            }
+            (2, 2) => {
+                // C.LWSP. rd = x0 is a reserved encoding.
+                let rd = inst.shift_then_mask(7, 0x1F) as usize;
+                if rd == 0 {
+                    return Err(CpuError::IllegalInstruction {
+                        pc: self.pc,
+                        raw: inst as u32,
+                    });
                 }
+                let addr = self.read_reg(2).wrapping_add(ci_word_sp_offset(inst));
+                self.write_reg(rd, mem.read_u32(addr));
+            }
+            (2, 3) => {
+                // C.FLWSP
+                let rd = inst.shift_then_mask(7, 0x1F) as usize;
+                let addr = self.read_reg(2).wrapping_add(ci_word_sp_offset(inst));
+                let raw = mem.read_u32(addr);
+                self.fregs[rd] = f64::from_bits(0xFFFFFFFF00000000u64 | (raw as u64));
             }
             (2, 4) => {
                 let rd = inst.shift_then_mask(7, 0x1F) as usize;
                 let rs2 = inst.shift_then_mask(2, 0x1F) as usize;
                 let bit12 = inst.shift_then_mask(12, 1);
                 if bit12 == 0 && rs2 == 0 {
-                    // C.JR
-                    if rd != 0 {
-                        next_pc = self.read_reg(rd) & !1;
+                    // C.JR. rs1 = x0 is a reserved encoding.
+                    if rd == 0 {
+                        return Err(CpuError::IllegalInstruction {
+                            pc: self.pc,
+                            raw: inst as u32,
+                        });
                     }
+                    next_pc = self.read_reg(rd) & !1;
                 } else if bit12 == 0 && rs2 != 0 {
-                    // C.MV
+                    // C.MV (rd = x0 is a hint)
                     if rd != 0 {
                         self.write_reg(rd, self.read_reg(rs2));
                     }
-                } else if bit12 == 1 && rd != 0 && rs2 == 0 {
+                } else if rd == 0 && rs2 == 0 {
+                    // C.EBREAK
+                    self.is_halted = true;
+                } else if rs2 == 0 {
                     // C.JALR
                     let target = self.read_reg(rd) & !1;
                     self.write_reg(1, next_pc);
                     next_pc = target;
-                } else if bit12 == 1 && rd != 0 && rs2 != 0 {
-                    // C.ADD
-                    self.write_reg(rd, self.read_reg(rd).wrapping_add(self.read_reg(rs2)));
+                } else {
+                    // C.ADD (rd = x0 is a hint)
+                    if rd != 0 {
+                        self.write_reg(rd, self.read_reg(rd).wrapping_add(self.read_reg(rs2)));
+                    }
                 }
+            }
+            (2, 5) => {
+                // C.FSDSP
+                let rs2 = inst.shift_then_mask(2, 0x1F) as usize;
+                let addr = self.read_reg(2).wrapping_add(css_double_sp_offset(inst));
+                let bits = self.read_f64(rs2).to_bits();
+                mem.write_u32(addr, bits as u32);
+                mem.write_u32(addr.wrapping_add(4), (bits >> 32) as u32);
             }
             (2, 6) => {
                 // C.SWSP
                 let rs2 = inst.shift_then_mask(2, 0x1F) as usize;
-                let offset =
-                    (inst.shift_then_mask(9, 0x3C) | inst.shift_then_mask(7, 0x3) << 6) as u32;
-                let addr = self.read_reg(2).wrapping_add(offset);
+                let addr = self.read_reg(2).wrapping_add(css_word_sp_offset(inst));
                 mem.write_u32(addr, self.read_reg(rs2));
+            }
+            (2, 7) => {
+                // C.FSWSP
+                let rs2 = inst.shift_then_mask(2, 0x1F) as usize;
+                let addr = self.read_reg(2).wrapping_add(css_word_sp_offset(inst));
+                let bits = (self.fregs[rs2].to_bits() & 0xFFFFFFFF) as u32;
+                mem.write_u32(addr, bits);
             }
 
             _ => {

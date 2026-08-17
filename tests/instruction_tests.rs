@@ -758,3 +758,408 @@ fn test_csr_immediate_instructions() {
     assert_eq!(cpu.read_reg(3), 13);
     assert_eq!(*cpu.csrs.get(&0x300).unwrap(), 9);
 }
+
+// ---------------------------------------------------------------------------
+// 7. RV32C Decoder Coverage (offsets, quadrant 1 funct3 4, compressed FP,
+//    c.ebreak and reserved encodings)
+// ---------------------------------------------------------------------------
+
+/// Assemble a 16-bit compressed instruction. Each field is `(value, hi, lo)`
+/// where `hi`/`lo` are inclusive instruction bit positions.
+fn rvc(op: u16, funct3: u16, fields: &[(u16, u32, u32)]) -> u16 {
+    let mut inst = op | (funct3 << 13);
+    for &(val, hi, lo) in fields {
+        let width = hi - lo + 1;
+        let mask = ((1u32 << width) - 1) as u16;
+        inst |= (val & mask) << lo;
+    }
+    inst
+}
+
+#[test]
+fn test_rvc_addi16sp_scales_immediate_once() {
+    let mut cpu = Cpu::new();
+    let mut mem = Memory::new();
+
+    // c.addi16sp sp, -16. nzimm = -16 => 10-bit field 0b11_1111_0000, so
+    // nzimm[9]=1, nzimm[8:7]=11, nzimm[6]=1, nzimm[5]=1, nzimm[4]=1.
+    let inst = rvc(
+        1,
+        3,
+        &[
+            (1, 12, 12),
+            (2, 11, 7),
+            (1, 6, 6),
+            (1, 5, 5),
+            (3, 4, 3),
+            (1, 2, 2),
+        ],
+    );
+    cpu.write_reg(2, 0x2000);
+    assert!(cpu.execute_inst16(inst, &mut mem).is_ok());
+    assert_eq!(cpu.read_reg(2), 0x2000 - 16);
+
+    // c.addi16sp sp, 32: nzimm[5] = 1 only.
+    let inst = rvc(1, 3, &[(2, 11, 7), (1, 2, 2)]);
+    cpu.write_reg(2, 0x2000);
+    assert!(cpu.execute_inst16(inst, &mut mem).is_ok());
+    assert_eq!(cpu.read_reg(2), 0x2020);
+}
+
+#[test]
+fn test_rvc_memory_offsets() {
+    let mut cpu = Cpu::new();
+    let mut mem = Memory::new();
+
+    // c.lw x8, 4(x8): uimm[2] = inst[6].
+    cpu.write_reg(8, 0x1000);
+    mem.write_u32(0x1004, 0xDEADBEEF);
+    let inst = rvc(
+        0,
+        2,
+        &[(0, 12, 10), (0, 9, 7), (1, 6, 6), (0, 5, 5), (0, 4, 2)],
+    );
+    assert!(cpu.execute_inst16(inst, &mut mem).is_ok());
+    assert_eq!(cpu.read_reg(8), 0xDEADBEEF);
+
+    // c.sw x9, 64(x8): uimm[6] = inst[5].
+    cpu.write_reg(8, 0x1000);
+    cpu.write_reg(9, 0x11223344);
+    let inst = rvc(
+        0,
+        6,
+        &[(0, 12, 10), (0, 9, 7), (0, 6, 6), (1, 5, 5), (1, 4, 2)],
+    );
+    assert!(cpu.execute_inst16(inst, &mut mem).is_ok());
+    assert_eq!(mem.read_u32(0x1040), 0x11223344);
+
+    // c.lwsp x9, 4(sp): uimm[4:2] = inst[6:4].
+    cpu.write_reg(2, 0x3000);
+    mem.write_u32(0x3004, 0x55667788);
+    let inst = rvc(2, 2, &[(0, 12, 12), (9, 11, 7), (1, 6, 4), (0, 3, 2)]);
+    assert!(cpu.execute_inst16(inst, &mut mem).is_ok());
+    assert_eq!(cpu.read_reg(9), 0x55667788);
+
+    // c.lwsp x9, 192(sp): uimm[7:6] = inst[3:2].
+    cpu.write_reg(2, 0x3000);
+    mem.write_u32(0x30C0, 0x99AABBCC);
+    let inst = rvc(2, 2, &[(0, 12, 12), (9, 11, 7), (0, 6, 4), (3, 3, 2)]);
+    assert!(cpu.execute_inst16(inst, &mut mem).is_ok());
+    assert_eq!(cpu.read_reg(9), 0x99AABBCC);
+
+    // c.swsp x8, 4(sp): uimm[5:2] = inst[12:9].
+    cpu.write_reg(2, 0x4000);
+    cpu.write_reg(8, 0xCAFEBABE);
+    let inst = rvc(2, 6, &[(1, 12, 9), (0, 8, 7), (8, 6, 2)]);
+    assert!(cpu.execute_inst16(inst, &mut mem).is_ok());
+    assert_eq!(mem.read_u32(0x4004), 0xCAFEBABE);
+}
+
+#[test]
+fn test_rvc_quadrant1_funct3_4_group() {
+    let mut cpu = Cpu::new();
+    let mut mem = Memory::new();
+
+    // c.srli x8, 3
+    cpu.write_reg(8, 0x80);
+    let inst = rvc(1, 4, &[(0, 12, 12), (0, 11, 10), (0, 9, 7), (3, 6, 2)]);
+    assert!(cpu.execute_inst16(inst, &mut mem).is_ok());
+    assert_eq!(cpu.read_reg(8), 0x10);
+
+    // c.srai x8, 4 (arithmetic: sign is preserved)
+    cpu.write_reg(8, 0xFFFFFF00);
+    let inst = rvc(1, 4, &[(0, 12, 12), (1, 11, 10), (0, 9, 7), (4, 6, 2)]);
+    assert!(cpu.execute_inst16(inst, &mut mem).is_ok());
+    assert_eq!(cpu.read_reg(8), 0xFFFFFFF0);
+
+    // c.andi x8, -8
+    cpu.write_reg(8, 0xFF);
+    let inst = rvc(1, 4, &[(1, 12, 12), (2, 11, 10), (0, 9, 7), (0x18, 6, 2)]);
+    assert!(cpu.execute_inst16(inst, &mut mem).is_ok());
+    assert_eq!(cpu.read_reg(8), 0xF8);
+
+    // c.sub x8, x9
+    cpu.write_reg(8, 100);
+    cpu.write_reg(9, 30);
+    let inst = rvc(
+        1,
+        4,
+        &[(0, 12, 12), (3, 11, 10), (0, 9, 7), (0, 6, 5), (1, 4, 2)],
+    );
+    assert!(cpu.execute_inst16(inst, &mut mem).is_ok());
+    assert_eq!(cpu.read_reg(8), 70);
+
+    // c.xor x8, x9
+    cpu.write_reg(8, 0b1100);
+    cpu.write_reg(9, 0b1010);
+    let inst = rvc(
+        1,
+        4,
+        &[(0, 12, 12), (3, 11, 10), (0, 9, 7), (1, 6, 5), (1, 4, 2)],
+    );
+    assert!(cpu.execute_inst16(inst, &mut mem).is_ok());
+    assert_eq!(cpu.read_reg(8), 0b0110);
+
+    // c.or x8, x9
+    cpu.write_reg(8, 0b1100);
+    let inst = rvc(
+        1,
+        4,
+        &[(0, 12, 12), (3, 11, 10), (0, 9, 7), (2, 6, 5), (1, 4, 2)],
+    );
+    assert!(cpu.execute_inst16(inst, &mut mem).is_ok());
+    assert_eq!(cpu.read_reg(8), 0b1110);
+
+    // c.and x8, x9
+    cpu.write_reg(8, 0b1100);
+    let inst = rvc(
+        1,
+        4,
+        &[(0, 12, 12), (3, 11, 10), (0, 9, 7), (3, 6, 5), (1, 4, 2)],
+    );
+    assert!(cpu.execute_inst16(inst, &mut mem).is_ok());
+    assert_eq!(cpu.read_reg(8), 0b1000);
+}
+
+#[test]
+fn test_rvc_compressed_fp_memory() {
+    let mut cpu = Cpu::new();
+    let mut mem = Memory::new();
+
+    // c.fsd f8, 8(x8) then c.fld f9, 8(x8)
+    cpu.write_reg(8, 0x1000);
+    cpu.write_f64(8, 12.5);
+    let fsd = rvc(0, 5, &[(1, 12, 10), (0, 9, 7), (0, 6, 5), (0, 4, 2)]);
+    assert!(cpu.execute_inst16(fsd, &mut mem).is_ok());
+    assert_eq!(mem.read_u32(0x1008), 12.5f64.to_bits() as u32);
+    assert_eq!(mem.read_u32(0x100C), (12.5f64.to_bits() >> 32) as u32);
+
+    let fld = rvc(0, 1, &[(1, 12, 10), (0, 9, 7), (0, 6, 5), (1, 4, 2)]);
+    assert!(cpu.execute_inst16(fld, &mut mem).is_ok());
+    assert_eq!(cpu.read_f64(9), 12.5);
+
+    // c.fsw f8, 4(x8) then c.flw f9, 4(x8)
+    cpu.write_f32(8, -2.25);
+    let fsw = rvc(
+        0,
+        7,
+        &[(0, 12, 10), (0, 9, 7), (1, 6, 6), (0, 5, 5), (0, 4, 2)],
+    );
+    assert!(cpu.execute_inst16(fsw, &mut mem).is_ok());
+    assert_eq!(mem.read_u32(0x1004), (-2.25f32).to_bits());
+
+    let flw = rvc(
+        0,
+        3,
+        &[(0, 12, 10), (0, 9, 7), (1, 6, 6), (0, 5, 5), (1, 4, 2)],
+    );
+    assert!(cpu.execute_inst16(flw, &mut mem).is_ok());
+    assert_eq!(cpu.read_f32(9), -2.25);
+}
+
+#[test]
+fn test_rvc_compressed_fp_stack_memory() {
+    let mut cpu = Cpu::new();
+    let mut mem = Memory::new();
+    cpu.write_reg(2, 0x2000);
+
+    // c.fsdsp f5, 8(sp) then c.fldsp f6, 8(sp)
+    cpu.write_f64(5, -3.75);
+    let fsdsp = rvc(2, 5, &[(1, 12, 10), (0, 9, 7), (5, 6, 2)]);
+    assert!(cpu.execute_inst16(fsdsp, &mut mem).is_ok());
+    assert_eq!(mem.read_u32(0x2008), (-3.75f64).to_bits() as u32);
+
+    let fldsp = rvc(2, 1, &[(0, 12, 12), (6, 11, 7), (1, 6, 5), (0, 4, 2)]);
+    assert!(cpu.execute_inst16(fldsp, &mut mem).is_ok());
+    assert_eq!(cpu.read_f64(6), -3.75);
+
+    // c.fswsp f5, 4(sp) then c.flwsp f7, 4(sp)
+    cpu.write_f32(5, 6.5);
+    let fswsp = rvc(2, 7, &[(1, 12, 9), (0, 8, 7), (5, 6, 2)]);
+    assert!(cpu.execute_inst16(fswsp, &mut mem).is_ok());
+    assert_eq!(mem.read_u32(0x2004), 6.5f32.to_bits());
+
+    let flwsp = rvc(2, 3, &[(0, 12, 12), (7, 11, 7), (1, 6, 4), (0, 3, 2)]);
+    assert!(cpu.execute_inst16(flwsp, &mut mem).is_ok());
+    assert_eq!(cpu.read_f32(7), 6.5);
+}
+
+#[test]
+fn test_rvc_ebreak_halts() {
+    let mut cpu = Cpu::new();
+    let mut mem = Memory::new();
+    let c_ebreak = rvc(2, 4, &[(1, 12, 12), (0, 11, 7), (0, 6, 2)]);
+    assert_eq!(c_ebreak, 0x9002);
+    assert!(cpu.execute_inst16(c_ebreak, &mut mem).is_ok());
+    assert!(cpu.is_halted);
+}
+
+#[test]
+fn test_rvc_reserved_encodings_trap() {
+    let mut mem = Memory::new();
+
+    let reserved: [(&str, u16); 9] = [
+        // c.addi4spn with a zero immediate (and the all-zero halfword).
+        ("c.addi4spn imm=0", rvc(0, 0, &[(1, 4, 2)])),
+        // Quadrant 1 funct3 3 with rd = x0.
+        (
+            "c.lui/c.addi16sp rd=0",
+            rvc(1, 3, &[(1, 12, 12), (0, 11, 7), (1, 2, 2)]),
+        ),
+        // c.lui with a zero immediate.
+        (
+            "c.lui imm=0",
+            rvc(1, 3, &[(0, 12, 12), (5, 11, 7), (0, 6, 2)]),
+        ),
+        // c.addi16sp with a zero immediate.
+        (
+            "c.addi16sp imm=0",
+            rvc(1, 3, &[(0, 12, 12), (2, 11, 7), (0, 6, 2)]),
+        ),
+        // c.jr with rs1 = x0.
+        (
+            "c.jr rd=0",
+            rvc(2, 4, &[(0, 12, 12), (0, 11, 7), (0, 6, 2)]),
+        ),
+        // RV32C shift encodings with shamt[5] set.
+        (
+            "c.srli shamt[5]=1",
+            rvc(1, 4, &[(1, 12, 12), (0, 11, 10), (0, 9, 7), (1, 6, 2)]),
+        ),
+        (
+            "c.slli shamt[5]=1",
+            rvc(2, 0, &[(1, 12, 12), (8, 11, 7), (1, 6, 2)]),
+        ),
+        // c.subw / c.addw are RV64-only.
+        (
+            "c.subw",
+            rvc(
+                1,
+                4,
+                &[(1, 12, 12), (3, 11, 10), (0, 9, 7), (0, 6, 5), (1, 4, 2)],
+            ),
+        ),
+        // c.lwsp with rd = x0.
+        (
+            "c.lwsp rd=0",
+            rvc(2, 2, &[(0, 12, 12), (0, 11, 7), (1, 6, 4), (0, 3, 2)]),
+        ),
+    ];
+
+    for (name, inst) in reserved {
+        let mut cpu = Cpu::new();
+        cpu.pc = 0x1000;
+        let res = cpu.execute_inst16(inst, &mut mem);
+        assert!(
+            res.is_err(),
+            "{} ({:#06x}) should trap, but it was accepted",
+            name,
+            inst
+        );
+        assert_eq!(
+            cpu.pc, 0x1000,
+            "{} ({:#06x}) advanced the PC instead of trapping",
+            name, inst
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 8. Machine-Mode Trap State (mcause / mepc / mstatus)
+// ---------------------------------------------------------------------------
+
+const CSR_MSTATUS: u16 = 0x300;
+const CSR_MTVEC: u16 = 0x305;
+const CSR_MEPC: u16 = 0x341;
+const CSR_MCAUSE: u16 = 0x342;
+const MSTATUS_MIE: u32 = 1 << 3;
+const MSTATUS_MPIE: u32 = 1 << 7;
+
+#[test]
+fn test_interrupt_records_cause_and_epc_separately() {
+    let mut cpu = Cpu::new();
+    cpu.csrs.insert(CSR_MTVEC, 0x8000);
+    cpu.csrs.insert(CSR_MSTATUS, MSTATUS_MIE);
+    cpu.pc = 0x1234;
+
+    cpu.handle_interrupt(7);
+
+    // mepc and mcause live in different registers, so the cause does not
+    // overwrite the return address.
+    assert_eq!(*cpu.csrs.get(&CSR_MEPC).unwrap(), 0x1234);
+    assert_eq!(*cpu.csrs.get(&CSR_MCAUSE).unwrap(), 0x8000_0007);
+    assert_eq!(cpu.pc, 0x8000);
+}
+
+#[test]
+fn test_interrupt_disables_further_interrupts_until_mret() {
+    let mut cpu = Cpu::new();
+    let mut mem = Memory::new();
+    cpu.csrs.insert(CSR_MTVEC, 0x8000);
+    cpu.csrs.insert(CSR_MSTATUS, MSTATUS_MIE);
+    cpu.pc = 0x1234;
+
+    assert!(cpu.interrupts_enabled());
+    cpu.handle_interrupt(7);
+
+    // Inside the handler MIE is clear and the previous value is kept in MPIE.
+    let mstatus = *cpu.csrs.get(&CSR_MSTATUS).unwrap();
+    assert_eq!(mstatus & MSTATUS_MIE, 0);
+    assert_eq!(mstatus & MSTATUS_MPIE, MSTATUS_MPIE);
+    assert!(!cpu.interrupts_enabled());
+
+    // A second interrupt while the handler runs must not clobber mepc.
+    // (`run()` gates delivery on `interrupts_enabled`.)
+    assert!(!cpu.interrupts_enabled());
+    assert_eq!(*cpu.csrs.get(&CSR_MEPC).unwrap(), 0x1234);
+
+    // MRET returns to the interrupted PC and re-enables interrupts.
+    cpu.pc = 0x8000;
+    assert!(cpu.execute_inst32(0x30200073, &mut mem).is_ok());
+    assert_eq!(cpu.pc, 0x1234);
+    let mstatus = *cpu.csrs.get(&CSR_MSTATUS).unwrap();
+    assert_eq!(mstatus & MSTATUS_MIE, MSTATUS_MIE);
+    assert_eq!(mstatus & MSTATUS_MPIE, MSTATUS_MPIE);
+    assert!(cpu.interrupts_enabled());
+}
+
+#[test]
+fn test_mret_leaves_interrupts_disabled_when_mpie_is_clear() {
+    let mut cpu = Cpu::new();
+    let mut mem = Memory::new();
+    cpu.csrs.insert(CSR_MEPC, 0x2000);
+    cpu.csrs.insert(CSR_MSTATUS, 0);
+
+    assert!(cpu.execute_inst32(0x30200073, &mut mem).is_ok());
+    assert_eq!(cpu.pc, 0x2000);
+    assert!(!cpu.interrupts_enabled());
+}
+
+#[test]
+fn test_interrupt_handler_returns_to_interrupted_instruction() {
+    let mut cpu = Cpu::new();
+    let mut mem = Memory::new();
+
+    // Handler at 0x8000: addi x5, x5, 1 ; mret
+    mem.write_u32(0x8000, encode_i(0x13, 5, 0, 5, 1));
+    mem.write_u32(0x8004, 0x30200073);
+    // Interrupted code at 0x1000: addi x6, x6, 1
+    mem.write_u32(0x1000, encode_i(0x13, 6, 0, 6, 1));
+
+    cpu.csrs.insert(CSR_MTVEC, 0x8000);
+    cpu.csrs.insert(CSR_MSTATUS, MSTATUS_MIE);
+    cpu.pc = 0x1000;
+
+    cpu.handle_interrupt(11);
+    // Run the handler to completion.
+    while cpu.pc != 0x1000 {
+        assert!(cpu.execute_inst32(mem.read_u32(cpu.pc), &mut mem).is_ok());
+    }
+    assert_eq!(cpu.read_reg(5), 1);
+
+    // The interrupted instruction has not run yet, and now does.
+    assert_eq!(cpu.read_reg(6), 0);
+    assert!(cpu.execute_inst32(mem.read_u32(cpu.pc), &mut mem).is_ok());
+    assert_eq!(cpu.read_reg(6), 1);
+    assert_eq!(cpu.pc, 0x1004);
+}
