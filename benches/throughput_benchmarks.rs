@@ -17,7 +17,7 @@
 //!   the 16/32-bit fetch split is on the measured path.
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
-use riscv_rs::{Cpu, Memory, MemoryOps};
+use riscv_rs::{Cpu, Memory, MemoryOps, SliceStatus};
 
 const PROGRAM_BASE: u32 = 0x1000;
 /// Where `memcpy_loop` reads from and writes to. Far from the program so the
@@ -285,6 +285,45 @@ fn run_workload(workload: &Workload) -> u64 {
     outcome.steps
 }
 
+/// A debugger `continue` across a long gap.
+///
+/// The completion goal for this work is that a ten-million-instruction gap
+/// resolves in well under a second. `run_until_breakpoint` used to call
+/// `step_instruction` once per instruction; it drives `run_slice` now, so the
+/// whole gap stays inside the CPU's inner loop.
+fn bench_continue_to_breakpoint(c: &mut Criterion) {
+    // Two million iterations of the five-instruction ALU body: ten million
+    // instructions between the start and the breakpoint.
+    const ITERATIONS: i32 = 2_000_000;
+    let workload = alu_loop(ITERATIONS);
+
+    let mut group = c.benchmark_group("debugger");
+    group.sample_size(10);
+    group.throughput(Throughput::Elements(workload.instructions));
+    group.bench_function("continue_across_10m_instructions", |b| {
+        b.iter(|| {
+            let mut cpu = Cpu::new();
+            cpu.pc = PROGRAM_BASE;
+            let mut mem = Memory::new();
+            workload.program.load(&mut mem);
+
+            // A breakpoint on the exit sequence, past the whole loop.
+            cpu.debug_enabled = true;
+            let exit_at = PROGRAM_BASE + (workload.program.len_bytes() as u32) - 12;
+            cpu.breakpoints.insert(exit_at);
+
+            let outcome = cpu.run_slice(&mut mem, u32::MAX);
+            assert_eq!(
+                outcome.status,
+                SliceStatus::Breakpoint,
+                "the run did not stop on the breakpoint"
+            );
+            black_box(outcome.steps)
+        })
+    });
+    group.finish();
+}
+
 fn bench_throughput(c: &mut Criterion) {
     // Enough iterations that the loop dominates the `Memory::new` allocation in
     // each sample, and few enough that a sample stays in the millisecond range.
@@ -308,5 +347,5 @@ fn bench_throughput(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_throughput);
+criterion_group!(benches, bench_throughput, bench_continue_to_breakpoint);
 criterion_main!(benches);
