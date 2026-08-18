@@ -25,7 +25,20 @@ panic = "abort"
 strip = true
 
 [package.metadata.wasm-pack.profile.release]
-wasm-opt = false
+# Binaryen's -O2 over the wasm-bindgen output. It was off, which left the
+# shipped module unoptimised beyond what LLVM had already done.
+# The Binaryen that wasm-pack downloads is older than the WebAssembly feature
+# set rustc now emits by default, so validation fails unless those features are
+# named explicitly.
+wasm-opt = [
+  "-O2",
+  "--enable-bulk-memory",
+  "--enable-nontrapping-float-to-int",
+  "--enable-sign-ext",
+  "--enable-mutable-globals",
+  "--enable-reference-types",
+  "--enable-multivalue",
+]
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
