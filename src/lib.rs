@@ -28,6 +28,10 @@ pub struct DebuggerSnapshot {
     pub is_halted: bool,
     pub is_breakpoint: bool,
     pub hit_address: u32,
+    /// Exit status the guest stopped with. Nonzero after a trap.
+    pub exit_code: i32,
+    /// True when execution stopped on a trap instead of a clean exit.
+    pub trapped: bool,
 }
 
 #[wasm_bindgen]

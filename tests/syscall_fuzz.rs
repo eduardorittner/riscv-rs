@@ -243,10 +243,10 @@ fn test_unknown_syscall_returns_error() {
 
 #[test]
 fn test_ecall_dispatch_timing() {
-    use std::time::Instant;
-    use riscv_rs::syscall::handle_ecall;
     use riscv_rs::host_imports::{reset_mocks, set_mock_custom_syscall};
+    use riscv_rs::syscall::handle_ecall;
     use riscv_rs::{Cpu, Memory};
+    use std::time::Instant;
 
     reset_mocks();
     let mut mem = Memory::new();
@@ -273,6 +273,14 @@ fn test_ecall_dispatch_timing() {
     }
     let dur_enabled = start2.elapsed();
 
-    println!("100k ecall with has_custom_syscalls=false: {:?} ({:?}/ecall)", dur_disabled, dur_disabled / 100_000);
-    println!("100k ecall with has_custom_syscalls=true (hook): {:?} ({:?}/ecall)", dur_enabled, dur_enabled / 100_000);
+    println!(
+        "100k ecall with has_custom_syscalls=false: {:?} ({:?}/ecall)",
+        dur_disabled,
+        dur_disabled / 100_000
+    );
+    println!(
+        "100k ecall with has_custom_syscalls=true (hook): {:?} ({:?}/ecall)",
+        dur_enabled,
+        dur_enabled / 100_000
+    );
 }

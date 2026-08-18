@@ -1,3 +1,7 @@
+use crate::cpu::{
+    ci_double_sp_offset, ci_word_sp_offset, cl_double_offset, cl_word_offset, creg,
+    css_double_sp_offset, css_word_sp_offset,
+};
 use crate::inst::*;
 use crate::utils::ShiftThenMask;
 use serde::{Deserialize, Serialize};
@@ -342,31 +346,221 @@ impl Disassembler {
         }
     }
 
-    fn decode_rvc(_address: u32, inst: u16) -> String {
+    fn decode_rvc(address: u32, inst: u16) -> String {
         let op = inst & 0x3;
         let funct3 = inst.shift_then_mask(13, 0x7);
+        let rd = inst.shift_then_mask(7, 0x1F) as u32;
+        let rs2 = inst.shift_then_mask(2, 0x1F) as u32;
+        let rdc = creg(inst, 2) as u32;
+        let rs1c = creg(inst, 7) as u32;
+        let imm6 = ((inst.shift_then_mask(12, 1) << 5) | inst.shift_then_mask(2, 0x1F)) as i16;
+        let imm6_sext = ((imm6 << 10) >> 10) as i32;
+
         match (op, funct3) {
-            (0x0, 0x0) => "c.addi4spn".to_string(),
-            (0x0, 0x2) => "c.lw".to_string(),
-            (0x0, 0x6) => "c.sw".to_string(),
-            (0x1, 0x0) => {
-                if inst == 0x0001 {
-                    "c.nop".to_string()
+            // Quadrant 0
+            (0x0, 0x0) => {
+                let imm = inst.shift_then_mask(7, 0x30)
+                    | inst.shift_then_mask(1, 0x3C0)
+                    | inst.shift_then_mask(4, 0x4)
+                    | inst.shift_then_mask(2, 0x8);
+                if imm == 0 {
+                    format!("c.reserved 0x{:04x}", inst)
                 } else {
-                    "c.addi".to_string()
+                    format!("c.addi4spn {}, sp, {}", reg_name(rdc), imm)
                 }
             }
-            (0x1, 0x1) => "c.jal".to_string(),
-            (0x1, 0x2) => "c.li".to_string(),
-            (0x1, 0x3) => "c.lui/c.addi16sp".to_string(),
-            (0x1, 0x5) => "c.j".to_string(),
-            (0x1, 0x6) => "c.beqz".to_string(),
-            (0x1, 0x7) => "c.bnez".to_string(),
-            (0x2, 0x0) => "c.slli".to_string(),
-            (0x2, 0x2) => "c.lwsp".to_string(),
-            (0x2, 0x4) => "c.mv/c.add/c.jr/c.jalr".to_string(),
-            (0x2, 0x6) => "c.swsp".to_string(),
-            _ => format!("c.unimpl 0x{:04x}", inst),
+            (0x0, 0x1) => format!(
+                "c.fld {}, {}({})",
+                freg_name(rdc),
+                cl_double_offset(inst),
+                reg_name(rs1c)
+            ),
+            (0x0, 0x2) => format!(
+                "c.lw {}, {}({})",
+                reg_name(rdc),
+                cl_word_offset(inst),
+                reg_name(rs1c)
+            ),
+            (0x0, 0x3) => format!(
+                "c.flw {}, {}({})",
+                freg_name(rdc),
+                cl_word_offset(inst),
+                reg_name(rs1c)
+            ),
+            (0x0, 0x5) => format!(
+                "c.fsd {}, {}({})",
+                freg_name(rdc),
+                cl_double_offset(inst),
+                reg_name(rs1c)
+            ),
+            (0x0, 0x6) => format!(
+                "c.sw {}, {}({})",
+                reg_name(rdc),
+                cl_word_offset(inst),
+                reg_name(rs1c)
+            ),
+            (0x0, 0x7) => format!(
+                "c.fsw {}, {}({})",
+                freg_name(rdc),
+                cl_word_offset(inst),
+                reg_name(rs1c)
+            ),
+
+            // Quadrant 1
+            (0x1, 0x0) => {
+                if rd == 0 {
+                    "c.nop".to_string()
+                } else {
+                    format!("c.addi {}, {}", reg_name(rd), imm6_sext)
+                }
+            }
+            (0x1, 0x1) => format!("c.jal {}", format_target_rvc(address, inst)),
+            (0x1, 0x2) => format!("c.li {}, {}", reg_name(rd), imm6_sext),
+            (0x1, 0x3) => {
+                if rd == 2 {
+                    let imm = (inst.shift_then_mask(12, 1) << 9)
+                        | (inst.shift_then_mask(3, 3) << 7)
+                        | (inst.shift_then_mask(5, 1) << 6)
+                        | (inst.shift_then_mask(2, 1) << 5)
+                        | (inst.shift_then_mask(6, 1) << 4);
+                    if imm == 0 {
+                        format!("c.reserved 0x{:04x}", inst)
+                    } else {
+                        format!("c.addi16sp sp, {}", (((imm as i16) << 6) >> 6) as i32)
+                    }
+                } else if rd == 0 || imm6 == 0 {
+                    format!("c.reserved 0x{:04x}", inst)
+                } else {
+                    format!("c.lui {}, {}", reg_name(rd), imm6_sext)
+                }
+            }
+            (0x1, 0x4) => {
+                let bit12 = inst.shift_then_mask(12, 1);
+                match inst.shift_then_mask(10, 0x3) {
+                    0 | 1 => {
+                        let op_name = if inst.shift_then_mask(10, 0x3) == 0 {
+                            "c.srli"
+                        } else {
+                            "c.srai"
+                        };
+                        if bit12 != 0 {
+                            format!("c.reserved 0x{:04x}", inst)
+                        } else {
+                            format!(
+                                "{} {}, {}",
+                                op_name,
+                                reg_name(rs1c),
+                                inst.shift_then_mask(2, 0x1F)
+                            )
+                        }
+                    }
+                    2 => format!("c.andi {}, {}", reg_name(rs1c), imm6_sext),
+                    _ => {
+                        if bit12 != 0 {
+                            format!("c.reserved 0x{:04x}", inst)
+                        } else {
+                            let op_name = match inst.shift_then_mask(5, 0x3) {
+                                0 => "c.sub",
+                                1 => "c.xor",
+                                2 => "c.or",
+                                _ => "c.and",
+                            };
+                            format!("{} {}, {}", op_name, reg_name(rs1c), reg_name(rdc))
+                        }
+                    }
+                }
+            }
+            (0x1, 0x5) => format!("c.j {}", format_target_rvc(address, inst)),
+            (0x1, 0x6) => format!(
+                "c.beqz {}, {}",
+                reg_name(rs1c),
+                format_branch_target_rvc(address, inst)
+            ),
+            (0x1, 0x7) => format!(
+                "c.bnez {}, {}",
+                reg_name(rs1c),
+                format_branch_target_rvc(address, inst)
+            ),
+
+            // Quadrant 2
+            (0x2, 0x0) => {
+                if inst.shift_then_mask(12, 1) != 0 {
+                    format!("c.reserved 0x{:04x}", inst)
+                } else {
+                    format!("c.slli {}, {}", reg_name(rd), inst.shift_then_mask(2, 0x1F))
+                }
+            }
+            (0x2, 0x1) => format!(
+                "c.fldsp {}, {}(sp)",
+                freg_name(rd),
+                ci_double_sp_offset(inst)
+            ),
+            (0x2, 0x2) => {
+                if rd == 0 {
+                    format!("c.reserved 0x{:04x}", inst)
+                } else {
+                    format!("c.lwsp {}, {}(sp)", reg_name(rd), ci_word_sp_offset(inst))
+                }
+            }
+            (0x2, 0x3) => format!("c.flwsp {}, {}(sp)", freg_name(rd), ci_word_sp_offset(inst)),
+            (0x2, 0x4) => {
+                let bit12 = inst.shift_then_mask(12, 1);
+                if bit12 == 0 && rs2 == 0 {
+                    if rd == 0 {
+                        format!("c.reserved 0x{:04x}", inst)
+                    } else {
+                        format!("c.jr {}", reg_name(rd))
+                    }
+                } else if bit12 == 0 {
+                    format!("c.mv {}, {}", reg_name(rd), reg_name(rs2))
+                } else if rd == 0 && rs2 == 0 {
+                    "c.ebreak".to_string()
+                } else if rs2 == 0 {
+                    format!("c.jalr {}", reg_name(rd))
+                } else {
+                    format!("c.add {}, {}", reg_name(rd), reg_name(rs2))
+                }
+            }
+            (0x2, 0x5) => format!(
+                "c.fsdsp {}, {}(sp)",
+                freg_name(rs2),
+                css_double_sp_offset(inst)
+            ),
+            (0x2, 0x6) => format!("c.swsp {}, {}(sp)", reg_name(rs2), css_word_sp_offset(inst)),
+            (0x2, 0x7) => format!(
+                "c.fswsp {}, {}(sp)",
+                freg_name(rs2),
+                css_word_sp_offset(inst)
+            ),
+
+            _ => format!("c.reserved 0x{:04x}", inst),
         }
     }
+}
+
+/// Sign-extended jump offset of the CJ format (`c.j`, `c.jal`), rendered as an
+/// absolute target address.
+fn format_target_rvc(address: u32, inst: u16) -> String {
+    let imm11 = (inst.shift_then_mask(12, 1) << 11)
+        | (inst.shift_then_mask(8, 1) << 10)
+        | (inst.shift_then_mask(9, 3) << 8)
+        | (inst.shift_then_mask(6, 1) << 7)
+        | (inst.shift_then_mask(7, 1) << 6)
+        | (inst.shift_then_mask(2, 1) << 5)
+        | (inst.shift_then_mask(11, 1) << 4)
+        | (inst.shift_then_mask(3, 7) << 1);
+    let offset = (((imm11 as i16) << 4) >> 4) as i32;
+    format!("0x{:x}", address.wrapping_add(offset as u32))
+}
+
+/// Sign-extended branch offset of the CB format (`c.beqz`, `c.bnez`), rendered
+/// as an absolute target address.
+fn format_branch_target_rvc(address: u32, inst: u16) -> String {
+    let imm = (inst.shift_then_mask(12, 1) << 8)
+        | (inst.shift_then_mask(5, 3) << 6)
+        | (inst.shift_then_mask(2, 1) << 5)
+        | (inst.shift_then_mask(10, 3) << 3)
+        | (inst.shift_then_mask(3, 3) << 1);
+    let offset = (((imm as i16) << 7) >> 7) as i32;
+    format!("0x{:x}", address.wrapping_add(offset as u32))
 }
