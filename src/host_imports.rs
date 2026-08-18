@@ -1,5 +1,3 @@
-use wasm_bindgen::prelude::*;
-
 #[cfg(target_arch = "wasm32")]
 mod ffi {
     use wasm_bindgen::prelude::*;
@@ -18,17 +16,11 @@ mod ffi {
         #[wasm_bindgen(js_name = jsGetIntInstDelay)]
         pub fn js_get_int_inst_delay() -> i32;
 
-        #[wasm_bindgen(js_name = jsGetSleepDuration)]
-        pub fn js_get_sleep_duration(sleep_type: i32) -> i32;
-
         #[wasm_bindgen(js_name = jsReadMMIO)]
         pub fn js_read_mmio(addr: u32, size: u32) -> u32;
 
         #[wasm_bindgen(js_name = jsWriteMMIO)]
         pub fn js_write_mmio(addr: u32, size: u32, val: u32);
-
-        #[wasm_bindgen(js_name = jsSimStop)]
-        pub fn js_sim_stop(snapshot: JsValue);
 
         #[wasm_bindgen(js_name = readFromStdin)]
         pub fn read_from_stdin(buf_ptr: *mut u8, count: u32) -> i32;
@@ -168,17 +160,6 @@ pub fn js_get_int_inst_delay() -> i32 {
     }
 }
 
-pub fn js_get_sleep_duration(_sleep_type: i32) -> i32 {
-    #[cfg(target_arch = "wasm32")]
-    {
-        ffi::js_get_sleep_duration(_sleep_type)
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        0
-    }
-}
-
 pub fn js_read_mmio(addr: u32, size: u32) -> u32 {
     #[cfg(any(test, not(target_arch = "wasm32")))]
     {
@@ -218,17 +199,6 @@ pub fn js_write_mmio(addr: u32, size: u32, val: u32) {
     }
     #[cfg(not(target_arch = "wasm32"))]
     {}
-}
-
-pub fn js_sim_stop(snapshot: JsValue) {
-    #[cfg(target_arch = "wasm32")]
-    {
-        ffi::js_sim_stop(snapshot);
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let _ = snapshot;
-    }
 }
 
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
