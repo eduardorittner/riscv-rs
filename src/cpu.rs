@@ -1,10 +1,8 @@
-use wasm_bindgen::JsValue;
-
 use crate::inst::*;
 use crate::memory::MemoryOps;
 use crate::syscall::handle_ecall;
 use crate::utils::ShiftThenMask;
-use crate::{host_imports, DebuggerSnapshot};
+use crate::{host_imports, DebuggerSnapshot, SliceOutcome, SliceStatus};
 use std::collections::HashMap;
 
 const NAN_F32: u32 = 0x7FC00000;
@@ -160,6 +158,9 @@ pub struct Cpu {
     /// Set when execution stopped on a trap rather than on a clean exit. The
     /// debugger snapshot carries it so the UI never reports a crash as success.
     pub trapped: bool,
+    /// Breakpoint address already reported to the host. Execution resumes
+    /// through it once, so a `continue` from a breakpoint makes progress.
+    resume_past_breakpoint: Option<u32>,
 }
 
 /// Exit code reported when the guest stops on a trap. It matches the shell
@@ -188,6 +189,7 @@ impl Cpu {
             step_counter: 0,
             has_custom_syscalls: false,
             trapped: false,
+            resume_past_breakpoint: None,
         };
         // Default Stack Pointer sp (x2) if not set by CLI
         cpu.regs[2] = 0x7FFFFFC;
@@ -196,9 +198,17 @@ impl Cpu {
 
     #[inline(always)]
     pub fn step_instruction<M: MemoryOps>(&mut self, mem: &mut M) -> StepResult {
-        if self.debug_enabled && self.breakpoints.contains(&self.pc) {
+        // A breakpoint is reported once. Without the one-shot skip, a step or a
+        // continue from the breakpoint address would report the same hit for
+        // ever and the session could never leave it.
+        if self.debug_enabled
+            && self.breakpoints.contains(&self.pc)
+            && self.resume_past_breakpoint != Some(self.pc)
+        {
+            self.resume_past_breakpoint = Some(self.pc);
             return StepResult::BreakpointHit(self.pc);
         }
+        self.resume_past_breakpoint = None;
 
         if self.is_halted {
             return StepResult::Halted(self.exit_code);
@@ -219,7 +229,7 @@ impl Cpu {
         if let Err(err) = instruction_result {
             if let CpuError::UnknownSyscall(ref sys_err) = err {
                 host_imports::js_print_err(&format!(
-                    "Unknown Syscall: {} (a0: {:#x}, a1: {:#x}, a2: {:#x}, a3: {:#x})",
+                    "Unknown Syscall: {} (a0: {:#x}, a1: {:#x}, a2: {:#x}, a3: {:#x})\n",
                     sys_err.sys_num, sys_err.a0, sys_err.a1, sys_err.a2, sys_err.a3
                 ));
                 host_imports::notify_unknown_syscall(
@@ -230,7 +240,10 @@ impl Cpu {
                     sys_err.a3,
                 );
             } else {
-                host_imports::js_print_err(&format!("CPU Exec Error at PC {:#010x}: {}", pc, err));
+                host_imports::js_print_err(&format!(
+                    "CPU Exec Error at PC {:#010x}: {}\n",
+                    pc, err
+                ));
             }
             // Every trap stops the machine. Without this the debugger would
             // hand back the same snapshot for ever on a faulting instruction.
@@ -298,104 +311,155 @@ impl Cpu {
         self.fregs[reg] = res_val;
     }
 
-    pub fn run<M: MemoryOps>(&mut self, mem: &mut M) -> i32 {
-        let mut inst_counter: u32 = 0;
-        let mut interrupt_delay = host_imports::js_get_int_inst_delay() as u32;
-        if interrupt_delay == 0 {
-            interrupt_delay = 1000;
+    /// Execute at most `budget` instructions and then hand control back.
+    ///
+    /// The caller drives the run one slice at a time, so a host that shares its
+    /// thread with a message queue (the browser worker) can answer messages
+    /// between slices. The slice ends early on a halt, on a trap, or on a
+    /// breakpoint hit.
+    pub fn run_slice<M: MemoryOps>(&mut self, mem: &mut M, budget: u32) -> SliceOutcome {
+        let budget = budget as u64;
+        let mut executed: u64 = 0;
+        // A slice runs to completion without yielding, so the debug settings
+        // cannot change while it runs. Hoisting the test keeps the inner loop as
+        // cheap as the unsliced loop it replaced.
+        let watch_breakpoints = self.debug_enabled && !self.breakpoints.is_empty();
+        let mut skip_breakpoint = self.resume_past_breakpoint.take();
+
+        let status = loop {
+            if self.is_halted {
+                break SliceStatus::Halted;
+            }
+            if executed >= budget {
+                break SliceStatus::Running;
+            }
+
+            // Poll for an external interrupt, then run until the next poll is
+            // due. Making the poll interval the bound of the inner loop keeps
+            // the per-instruction work down to one counter.
+            let mut interrupt_delay = host_imports::js_get_int_inst_delay() as u64;
+            if interrupt_delay == 0 {
+                interrupt_delay = 1000;
+            }
+            if host_imports::js_interrupt_enabled() != 0 && self.interrupts_enabled() {
+                let irq = host_imports::js_external_interrupt();
+                if irq != 0 {
+                    self.handle_interrupt(irq);
+                }
+            }
+
+            let chunk = interrupt_delay.min(budget - executed);
+            let mut done: u64 = 0;
+            let mut stopped = None;
+
+            while done < chunk {
+                if self.is_halted {
+                    stopped = Some(SliceStatus::Halted);
+                    break;
+                }
+
+                if watch_breakpoints {
+                    if self.breakpoints.contains(&self.pc) && skip_breakpoint != Some(self.pc) {
+                        self.resume_past_breakpoint = Some(self.pc);
+                        stopped = Some(SliceStatus::Breakpoint);
+                        break;
+                    }
+                    // Only the first instruction of a slice may resume through a
+                    // breakpoint that was already reported.
+                    skip_breakpoint = None;
+                }
+
+                let pc = self.pc;
+                let inst16 = mem.read_u16(pc);
+
+                // Compressed instruction (16-bit) if lower 2 bits are not 0b11
+                let compressed = (inst16 & 0x3) != 0x3;
+                let result = if compressed {
+                    self.execute_inst16(inst16, mem)
+                } else {
+                    let inst32 = mem.read_u32(pc);
+                    self.execute_inst32(inst32, mem)
+                };
+
+                if let Err(e) = result {
+                    if let CpuError::UnknownSyscall(ref sys_err) = e {
+                        host_imports::js_print_err(&format!(
+                            "Unknown Syscall: {} (a0: {:#x}, a1: {:#x}, a2: {:#x}, a3: {:#x})\n",
+                            sys_err.sys_num, sys_err.a0, sys_err.a1, sys_err.a2, sys_err.a3
+                        ));
+                        host_imports::notify_unknown_syscall(
+                            sys_err.sys_num,
+                            sys_err.a0,
+                            sys_err.a1,
+                            sys_err.a2,
+                            sys_err.a3,
+                        );
+                    } else if compressed {
+                        host_imports::js_print_err(&format!(
+                            "CPU Exec Error (Compressed) at PC {:#010x}: {}\n",
+                            pc, e
+                        ));
+                    } else {
+                        host_imports::js_print_err(&format!(
+                            "CPU Exec Error at PC {:#010x}: {}\n",
+                            pc, e
+                        ));
+                    }
+                    // The faulting instruction is not counted, which matches the
+                    // instruction total the run loop reported before slicing.
+                    self.trapped = true;
+                    self.exit_code = TRAP_EXIT_CODE;
+                    self.is_halted = true;
+                    stopped = Some(SliceStatus::Trapped);
+                    break;
+                }
+
+                self.step_counter += 1;
+                done += 1;
+            }
+
+            executed += done;
+            if let Some(status) = stopped {
+                break status;
+            }
+        };
+
+        SliceOutcome {
+            status,
+            steps: executed,
+            pc: self.pc,
+            exit_code: self.exit_code,
         }
+    }
 
-        while !self.is_halted {
-            // Check interrupts periodically
-            if inst_counter >= interrupt_delay {
-                inst_counter = 0;
-                interrupt_delay = host_imports::js_get_int_inst_delay() as u32;
-                if interrupt_delay == 0 {
-                    interrupt_delay = 1000;
-                }
-
-                if host_imports::js_interrupt_enabled() != 0 && self.interrupts_enabled() {
-                    let irq = host_imports::js_external_interrupt();
-                    if irq != 0 {
-                        self.handle_interrupt(irq);
-                    }
-                }
+    /// Run to completion. The CLI and the batch entry points use it; the browser
+    /// worker drives `run_slice` instead so it can answer messages during a run.
+    pub fn run<M: MemoryOps>(&mut self, mem: &mut M) -> i32 {
+        loop {
+            let outcome = self.run_slice(mem, u32::MAX);
+            match outcome.status {
+                // A breakpoint cannot stall this loop: `run_slice` steps past an
+                // already-reported breakpoint on the next call.
+                SliceStatus::Running | SliceStatus::Breakpoint => continue,
+                SliceStatus::Halted | SliceStatus::Trapped => break,
             }
-
-            let pc = self.pc;
-            let inst16 = mem.read_u16(pc);
-
-            // Compressed instruction (16-bit) if lower 2 bits are not 0b11
-            if (inst16 & 0x3) != 0x3 {
-                if let Err(e) = self.execute_inst16(inst16, mem) {
-                    if let CpuError::UnknownSyscall(ref sys_err) = e {
-                        host_imports::js_print_err(&format!(
-                            "Unknown Syscall: {} (a0: {:#x}, a1: {:#x}, a2: {:#x}, a3: {:#x})",
-                            sys_err.sys_num, sys_err.a0, sys_err.a1, sys_err.a2, sys_err.a3
-                        ));
-                        host_imports::notify_unknown_syscall(
-                            sys_err.sys_num,
-                            sys_err.a0,
-                            sys_err.a1,
-                            sys_err.a2,
-                            sys_err.a3,
-                        );
-                    } else {
-                        host_imports::js_print_err(&format!(
-                            "CPU Exec Error (Compressed) at PC {:#010x}: {}",
-                            pc, e
-                        ));
-                    }
-                    self.trapped = true;
-                    self.exit_code = TRAP_EXIT_CODE;
-                    self.is_halted = true;
-                    break;
-                }
-            } else {
-                let inst32 = mem.read_u32(pc);
-                if let Err(e) = self.execute_inst32(inst32, mem) {
-                    if let CpuError::UnknownSyscall(ref sys_err) = e {
-                        host_imports::js_print_err(&format!(
-                            "Unknown Syscall: {} (a0: {:#x}, a1: {:#x}, a2: {:#x}, a3: {:#x})",
-                            sys_err.sys_num, sys_err.a0, sys_err.a1, sys_err.a2, sys_err.a3
-                        ));
-                        host_imports::notify_unknown_syscall(
-                            sys_err.sys_num,
-                            sys_err.a0,
-                            sys_err.a1,
-                            sys_err.a2,
-                            sys_err.a3,
-                        );
-                    } else {
-                        host_imports::js_print_err(&format!(
-                            "CPU Exec Error at PC {:#010x}: {}",
-                            pc, e
-                        ));
-                    }
-                    self.trapped = true;
-                    self.exit_code = TRAP_EXIT_CODE;
-                    self.is_halted = true;
-                    break;
-                }
-            }
-
-            inst_counter += 1;
-            self.step_counter += 1;
         }
 
         self.is_halted = true;
-        host_imports::js_sim_stop(self.get_snapshot_js(false, self.pc));
         self.exit_code
     }
 
-    pub fn get_snapshot_js(&self, is_breakpoint: bool, hit_address: u32) -> JsValue {
+    /// The machine state the debugger UI reads. `DebuggerSnapshot` crosses the
+    /// WASM boundary as a typed object, so a field rename here becomes a
+    /// TypeScript error in the JavaScript that reads it.
+    pub fn snapshot(&self, is_breakpoint: bool, hit_address: u32) -> DebuggerSnapshot {
         let mstatus = *self.csrs.get(&MSTATUS).unwrap_or(&0);
         let mcause = *self.csrs.get(&MCAUSE).unwrap_or(&0);
         let mepc = *self.csrs.get(&MEPC).unwrap_or(&0);
         let mtvec = *self.csrs.get(&MTVEC).unwrap_or(&0);
         let fcsr = self.fcsr;
 
-        let snapshot = DebuggerSnapshot {
+        DebuggerSnapshot {
             pc: self.pc,
             gpr: self.regs.to_vec(),
             fpr: self.fregs.to_vec(),
@@ -406,8 +470,7 @@ impl Cpu {
             hit_address,
             exit_code: self.exit_code,
             trapped: self.trapped,
-        };
-        serde_wasm_bindgen::to_value(&snapshot).unwrap_or(JsValue::NULL)
+        }
     }
 
     /// True when `mstatus.MIE` allows machine-mode interrupts to be delivered.

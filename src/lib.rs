@@ -9,16 +9,18 @@ pub mod utils;
 
 use cli::SimConfig;
 pub use cpu::{Cpu, CpuError, StepResult};
-use disasm::Disassembler;
+use disasm::{DisassembledInst, Disassembler};
 use goblin::elf::Elf;
 pub use inst::{DecodedInst16, DecodedInst32};
 pub use memory::{Memory, MemoryOps};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use tsify_next::Tsify;
 pub use utils::{shift_then_mask, ShiftThenMask};
 use wasm_bindgen::prelude::*;
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, Tsify)]
+#[tsify(into_wasm_abi, from_wasm_abi)]
 pub struct DebuggerSnapshot {
     pub pc: u32,
     pub gpr: Vec<u32>,  // 32 GP registers
@@ -32,6 +34,32 @@ pub struct DebuggerSnapshot {
     pub exit_code: i32,
     /// True when execution stopped on a trap instead of a clean exit.
     pub trapped: bool,
+}
+
+/// Why a run slice gave control back to the host.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Tsify)]
+#[tsify(into_wasm_abi, from_wasm_abi)]
+#[serde(rename_all = "lowercase")]
+pub enum SliceStatus {
+    /// The slice used its whole budget and the guest is still running.
+    Running,
+    /// The guest called exit.
+    Halted,
+    /// The guest took a trap; the machine is stopped.
+    Trapped,
+    /// Execution reached an active breakpoint and stopped before it.
+    Breakpoint,
+}
+
+/// Result of one `run_slice` call.
+#[derive(Serialize, Deserialize, Clone, Debug, Tsify)]
+#[tsify(into_wasm_abi, from_wasm_abi)]
+pub struct SliceOutcome {
+    pub status: SliceStatus,
+    /// Instructions executed in this slice.
+    pub steps: u64,
+    pub pc: u32,
+    pub exit_code: i32,
 }
 
 #[wasm_bindgen]
@@ -73,9 +101,20 @@ impl Simulator {
                 args.push(val);
             }
         }
+        self.load_binary_with_args(binary_bytes, &args)
+    }
+}
 
-        let config = SimConfig::parse_args(&args);
+impl Simulator {
+    /// The body of `load_binary`, free of the JavaScript argument array so it
+    /// can also be driven from the CLI and from native tests.
+    pub fn load_binary_with_args(&mut self, binary_bytes: &[u8], args: &[String]) -> u32 {
+        let config = SimConfig::parse_args(args);
+        // The host may enable custom syscalls before a binary exists. A fresh
+        // CPU would drop that flag, so carry it across the reset.
+        let has_custom_syscalls = self.cpu.has_custom_syscalls;
         self.cpu = Cpu::new();
+        self.cpu.has_custom_syscalls = has_custom_syscalls;
         self.mem = Memory::new();
         self.symbols.clear();
 
@@ -188,9 +227,19 @@ impl Simulator {
 
         entry_point
     }
+}
 
+#[wasm_bindgen]
+impl Simulator {
     pub fn run_full(&mut self) -> i32 {
         self.cpu.run(&mut self.mem)
+    }
+
+    /// Run at most `budget` instructions and report why the slice ended. The
+    /// browser worker calls this in a `setTimeout` chain, so the message queue
+    /// keeps its turn while a program runs.
+    pub fn run_slice(&mut self, budget: u32) -> SliceOutcome {
+        self.cpu.run_slice(&mut self.mem, budget)
     }
 
     pub fn set_debug_mode(&mut self, enabled: bool) {
@@ -209,11 +258,11 @@ impl Simulator {
         self.cpu.breakpoints.clear();
     }
 
-    pub fn get_snapshot_js(&self, is_breakpoint: bool, hit_address: u32) -> JsValue {
-        self.cpu.get_snapshot_js(is_breakpoint, hit_address)
+    pub fn get_snapshot_js(&self, is_breakpoint: bool, hit_address: u32) -> DebuggerSnapshot {
+        self.cpu.snapshot(is_breakpoint, hit_address)
     }
 
-    pub fn debug_step(&mut self) -> JsValue {
+    pub fn debug_step(&mut self) -> DebuggerSnapshot {
         let res = self.cpu.step_instruction(&mut self.mem);
         let (is_bp, hit_addr) = match res {
             StepResult::BreakpointHit(addr) => (true, addr),
@@ -222,7 +271,7 @@ impl Simulator {
         self.get_snapshot_js(is_bp, hit_addr)
     }
 
-    pub fn debug_step_over(&mut self) -> JsValue {
+    pub fn debug_step_over(&mut self) -> DebuggerSnapshot {
         let current_pc = self.cpu.pc;
         let inst = self.mem.read_u32(current_pc);
         let is_call = is_call_instruction(inst);
@@ -241,7 +290,7 @@ impl Simulator {
         }
     }
 
-    pub fn debug_step_out(&mut self) -> JsValue {
+    pub fn debug_step_out(&mut self) -> DebuggerSnapshot {
         let ra = self.cpu.regs[1]; // x1 / ra
         let had_bp = self.cpu.breakpoints.contains(&ra);
         self.cpu.breakpoints.insert(ra);
@@ -252,7 +301,7 @@ impl Simulator {
         snap
     }
 
-    pub fn run_until_breakpoint(&mut self) -> JsValue {
+    pub fn run_until_breakpoint(&mut self) -> DebuggerSnapshot {
         loop {
             let res = self.cpu.step_instruction(&mut self.mem);
             match res {
@@ -285,7 +334,7 @@ impl Simulator {
         }
     }
 
-    pub fn disassemble_range(&self, start_addr: u32, len: u32) -> JsValue {
+    pub fn disassemble_range(&self, start_addr: u32, len: u32) -> Vec<DisassembledInst> {
         let mut disasm_list = Vec::new();
         let mut curr = start_addr;
         while curr < start_addr.saturating_add(len) {
@@ -296,7 +345,7 @@ impl Simulator {
             disasm_list.push(item);
             curr = curr.saturating_add(step);
         }
-        serde_wasm_bindgen::to_value(&disasm_list).unwrap_or(JsValue::NULL)
+        disasm_list
     }
 
     pub fn get_symbol_at(&self, addr: u32) -> Option<String> {

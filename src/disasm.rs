@@ -6,8 +6,10 @@ use crate::inst::*;
 use crate::utils::ShiftThenMask;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use tsify_next::Tsify;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, Tsify)]
+#[tsify(into_wasm_abi, from_wasm_abi)]
 pub struct DisassembledInst {
     pub address: u32,
     pub opcode_hex: String,
