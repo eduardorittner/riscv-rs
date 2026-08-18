@@ -16,6 +16,16 @@ goblin = { version = "0.8", default-features = false, features = ["elf32", "elf6
 serde = { version = "1.0", features = ["derive"] }
 serde-wasm-bindgen = "0.6"
 tsify-next = { version = "0.5.6", features = ["js"] }
+# Optional so the native builds and the test runners do not carry it. The
+# browser build turns it on; see the `make build` recipe.
+console_error_panic_hook = { version = "0.1", optional = true }
+
+[features]
+default = []
+# Installs a panic hook that prints the Rust panic message, its location and a
+# backtrace to the browser console. Without it `panic = "abort"` plus
+# `strip = true` turns every panic into an opaque `unreachable` trap.
+console_error_panic_hook = ["dep:console_error_panic_hook"]
 
 [profile.release]
 opt-level = 3

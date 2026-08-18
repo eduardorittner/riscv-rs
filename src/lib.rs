@@ -79,6 +79,12 @@ impl Default for Simulator {
 impl Simulator {
     #[wasm_bindgen(constructor)]
     pub fn new() -> Self {
+        // Without the hook, `panic = "abort"` and `strip = true` turn a Rust
+        // panic into a bare `unreachable` trap: no message, no location, and
+        // nothing in the browser console to act on.
+        #[cfg(feature = "console_error_panic_hook")]
+        console_error_panic_hook::set_once();
+
         Self {
             cpu: Cpu::new(),
             mem: Memory::new(),
