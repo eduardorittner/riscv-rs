@@ -35,4 +35,8 @@ proptest = "1.4"
 name = "memory_benchmarks"
 harness = false
 
+[[bench]]
+name = "throughput_benchmarks"
+harness = false
+
 
