@@ -52,6 +52,24 @@ pub trait MemoryOps {
         }
     }
 
+    /// Fetch the instruction window at `addr` with a single page lookup.
+    ///
+    /// The low 16 bits of the returned word are always the halfword at `addr`,
+    /// which is what decides whether the instruction is compressed. The second
+    /// element says whether the high 16 bits are the following halfword.
+    ///
+    /// It is false in two cases, and the caller must then read the upper half
+    /// separately: at a page edge, where the four-byte window straddles two
+    /// pages, and next to the MMIO window, where a blind four-byte read would
+    /// perform a device read with side effects that the guest never asked for.
+    ///
+    /// Instruction fetch used to cost two reads for every 32-bit instruction —
+    /// a `read_u16` to classify it and a `read_u32` to decode it — and each one
+    /// repeated the MMIO bounds check and the page lookup.
+    fn fetch_window(&self, addr: u32) -> (u32, bool) {
+        (self.read_u32(addr), true)
+    }
+
     fn get_brk(&self) -> u32 {
         0
     }
@@ -187,6 +205,35 @@ impl MemoryOps for Memory {
         let b2 = self.read_u8(addr.wrapping_add(2)) as u32;
         let b3 = self.read_u8(addr.wrapping_add(3)) as u32;
         b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
+    }
+
+    fn fetch_window(&self, addr: u32) -> (u32, bool) {
+        let offset = offset_of(addr);
+        // The whole four-byte window is inside one ordinary page: one bounds
+        // check, one page lookup, one load. This is the path every instruction
+        // that is not on a page edge takes.
+        if addr < MMIO_BASE && offset + 3 < PAGE_SIZE {
+            return match self.get_page(idx_of(addr)) {
+                Some(page) => (
+                    u32::from_le_bytes([
+                        page[offset],
+                        page[offset + 1],
+                        page[offset + 2],
+                        page[offset + 3],
+                    ]),
+                    true,
+                ),
+                // Unmapped pages read as zero, and the all-zero halfword is the
+                // canonical illegal instruction, which is the right answer for
+                // a fetch from nothing.
+                None => (0, false),
+            };
+        }
+
+        // Page edge, or the MMIO window. Read only the halfword that was asked
+        // for: widening the read here could trigger a device read the guest
+        // never performed.
+        (self.read_u16(addr) as u32, false)
     }
 
     fn write_u32(&mut self, addr: u32, val: u32) {
@@ -326,5 +373,48 @@ mod tests {
         // Read from unallocated page
         let unalloc_read = mem.read_bytes(0x200000, 100);
         assert_eq!(unalloc_read, vec![0u8; 100]);
+    }
+
+    #[test]
+    fn fetch_window_returns_a_whole_word_inside_a_page() {
+        let mut mem = Memory::new();
+        mem.write_u32(0x1000, 0xDEAD_BEEF);
+
+        let (bits, wide) = mem.fetch_window(0x1000);
+        assert_eq!(bits, 0xDEAD_BEEF);
+        assert!(wide, "a window inside one page carries all 32 bits");
+    }
+
+    #[test]
+    fn fetch_window_reports_a_partial_read_at_a_page_edge() {
+        let mut mem = Memory::new();
+        // The last halfword of page 0. The other half of a 32-bit instruction
+        // here lives in page 1.
+        let addr = PAGE_SIZE as u32 - 2;
+        mem.write_u16(addr, 0xB0B5);
+        mem.write_u16(addr + 2, 0xF00D);
+
+        let (bits, wide) = mem.fetch_window(addr);
+        assert_eq!(bits & 0xFFFF, 0xB0B5, "the asked-for halfword is present");
+        assert!(
+            !wide,
+            "a window that straddles two pages must report itself as partial"
+        );
+    }
+
+    #[test]
+    fn fetch_window_does_not_widen_into_the_mmio_window() {
+        let mem = Memory::new();
+        // A widening read here would call out to the host MMIO handler for an
+        // address the guest never touched.
+        let (_, wide) = mem.fetch_window(MMIO_BASE - 2);
+        assert!(!wide, "a fetch beside MMIO must not read across the border");
+    }
+
+    #[test]
+    fn fetch_window_reads_an_unmapped_page_as_zero() {
+        let mem = Memory::new();
+        let (bits, _) = mem.fetch_window(0x0080_0000);
+        assert_eq!(bits, 0, "an unmapped fetch is the illegal instruction");
     }
 }

@@ -215,12 +215,15 @@ impl Cpu {
         }
 
         let pc = self.pc;
-        let inst16 = mem.read_u16(pc);
+        let (window, wide) = mem.fetch_window(pc);
+        let inst16 = window as u16;
 
         let instruction_result = if (inst16 & 0x3) != 0x3 {
             self.execute_inst16(inst16, mem)
         } else {
-            let inst32 = mem.read_u32(pc);
+            // `wide` is false only on a page edge or beside MMIO, where the
+            // fetch could not safely widen itself.
+            let inst32 = if wide { window } else { mem.read_u32(pc) };
             self.execute_inst32(inst32, mem)
         };
 
@@ -370,14 +373,18 @@ impl Cpu {
                 }
 
                 let pc = self.pc;
-                let inst16 = mem.read_u16(pc);
+                // One page lookup for the whole instruction. The low halfword
+                // classifies it; the high halfword is already in hand when the
+                // instruction turns out to be 32 bits wide.
+                let (window, wide) = mem.fetch_window(pc);
+                let inst16 = window as u16;
 
                 // Compressed instruction (16-bit) if lower 2 bits are not 0b11
                 let compressed = (inst16 & 0x3) != 0x3;
                 let result = if compressed {
                     self.execute_inst16(inst16, mem)
                 } else {
-                    let inst32 = mem.read_u32(pc);
+                    let inst32 = if wide { window } else { mem.read_u32(pc) };
                     self.execute_inst32(inst32, mem)
                 };
 
