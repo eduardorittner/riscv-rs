@@ -43,16 +43,17 @@ pub fn handle_ecall<M: MemoryOps>(cpu: &mut Cpu, mem: &mut M) -> Result<(), Unkn
             let fd = a0;
             let buf_ptr = a1;
             let count = (a2 as usize).min(16 * 1024 * 1024);
-            let mut bytes = mem.read_bytes(buf_ptr, count);
-            while bytes.last() == Some(&0) {
-                bytes.pop();
-            }
-            let text = String::from_utf8_lossy(&bytes);
+            // The bytes go to the host exactly as the guest wrote them. This
+            // used to strip every trailing zero byte and then run the result
+            // through `from_utf8_lossy`, which silently truncated any program
+            // that wrote binary data ending in NUL and replaced any byte that
+            // was not valid UTF-8.
+            let bytes = mem.read_bytes(buf_ptr, count);
 
             if fd == 1 {
-                host_imports::js_print(&text);
+                host_imports::js_write_stdout(&bytes);
             } else if fd == 2 {
-                host_imports::js_print_err(&text);
+                host_imports::js_write_stderr(&bytes);
             }
             cpu.write_reg(10, a2); // Return number of bytes written
             Ok(())

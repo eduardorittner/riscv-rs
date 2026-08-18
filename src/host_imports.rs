@@ -34,6 +34,14 @@ mod ffi {
         #[wasm_bindgen(js_name = jsPrintErr)]
         pub fn js_print_err(msg: &str);
 
+        /// Guest `write()` to fd 1, as raw bytes.
+        #[wasm_bindgen(js_name = jsWriteStdout)]
+        pub fn js_write_stdout(bytes: &[u8]);
+
+        /// Guest `write()` to fd 2, as raw bytes.
+        #[wasm_bindgen(js_name = jsWriteStderr)]
+        pub fn js_write_stderr(bytes: &[u8]);
+
         #[wasm_bindgen(js_name = notifyUnknownSyscall)]
         pub fn notify_unknown_syscall(sys_num: u32, a0: u32, a1: u32, a2: u32, a3: u32);
     }
@@ -260,6 +268,41 @@ pub fn js_print_err(msg: &str) {
     #[cfg(target_arch = "wasm32")]
     {
         ffi::js_print_err(msg);
+    }
+}
+
+/// A guest write to stdout, byte for byte.
+///
+/// Separate from `js_print`, which carries the simulator's own diagnostic
+/// messages. Guest output must cross as bytes: it is not always valid UTF-8,
+/// and a multi-byte sequence can be split across two `write()` calls. The
+/// host decodes with a streaming decoder that holds the partial sequence.
+pub fn js_write_stdout(bytes: &[u8]) {
+    #[cfg(any(test, not(target_arch = "wasm32")))]
+    {
+        MOCK_STDOUT.with(|s| {
+            s.borrow_mut()
+                .push(String::from_utf8_lossy(bytes).into_owned())
+        });
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        ffi::js_write_stdout(bytes);
+    }
+}
+
+/// A guest write to stderr, byte for byte. See `js_write_stdout`.
+pub fn js_write_stderr(bytes: &[u8]) {
+    #[cfg(any(test, not(target_arch = "wasm32")))]
+    {
+        MOCK_STDERR.with(|s| {
+            s.borrow_mut()
+                .push(String::from_utf8_lossy(bytes).into_owned())
+        });
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        ffi::js_write_stderr(bytes);
     }
 }
 
