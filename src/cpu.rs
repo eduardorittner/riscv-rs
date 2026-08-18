@@ -510,14 +510,19 @@ impl Cpu {
         let mut next_pc = self.pc.wrapping_add(4);
 
         match inst.opcode {
-            OP_LUI | OP_AUIPC | OP_JAL | OP_JALR | OP_BRANCH | OP_LOAD | OP_STORE | OP_IMM
-            | OP_OP | OP_MISC_MEM => {
-                if inst.opcode == OP_OP && inst.funct7 == 0x01 {
+            // The M extension shares the OP major opcode with the base integer
+            // register-register instructions; `funct7 == 0x01` is what tells
+            // them apart. Giving OP_OP its own arm keeps that test off the path
+            // of every other opcode, which is where it used to sit.
+            OP_OP => {
+                if inst.funct7 == 0x01 {
                     self.exec_rv32m(&inst, mem)?;
                 } else {
                     self.exec_rv32i(&inst, mem, &mut next_pc)?;
                 }
             }
+            OP_LUI | OP_AUIPC | OP_JAL | OP_JALR | OP_BRANCH | OP_LOAD | OP_STORE | OP_IMM
+            | OP_MISC_MEM => self.exec_rv32i(&inst, mem, &mut next_pc)?,
             OP_AMO => self.exec_rv32a(&inst, mem)?,
             OP_LOAD_FP | OP_STORE_FP | OP_MADD | OP_MSUB | OP_NMSUB | OP_NMADD | OP_OP_FP => {
                 self.exec_rv32fd(&inst, mem)?;
