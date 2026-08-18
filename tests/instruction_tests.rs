@@ -612,24 +612,24 @@ fn test_csr_instructions_and_mret() {
     let inst = encode_i(0x73, 2, 1, 1, 0x300);
     assert!(cpu.execute_inst32(inst, &mut mem).is_ok());
     assert_eq!(cpu.read_reg(2), 0);
-    assert_eq!(*cpu.csrs.get(&0x300).unwrap(), 0b1010);
+    assert_eq!(cpu.csrs.get(0x300), 0b1010);
 
     // CSRRS x3, 0x300, x1 with x1 = 0b0100 -> set bits
     cpu.write_reg(1, 0b0100);
     let inst = encode_i(0x73, 3, 2, 1, 0x300);
     assert!(cpu.execute_inst32(inst, &mut mem).is_ok());
     assert_eq!(cpu.read_reg(3), 0b1010);
-    assert_eq!(*cpu.csrs.get(&0x300).unwrap(), 0b1110);
+    assert_eq!(cpu.csrs.get(0x300), 0b1110);
 
     // CSRRC x4, 0x300, x1 with x1 = 0b0010 -> clear bit 1
     cpu.write_reg(1, 0b0010);
     let inst = encode_i(0x73, 4, 3, 1, 0x300);
     assert!(cpu.execute_inst32(inst, &mut mem).is_ok());
     assert_eq!(cpu.read_reg(4), 0b1110);
-    assert_eq!(*cpu.csrs.get(&0x300).unwrap(), 0b1100);
+    assert_eq!(cpu.csrs.get(0x300), 0b1100);
 
     // MRET instruction (0x30200073) restores PC from mepc (0x341)
-    cpu.csrs.insert(0x341, 0x8000);
+    cpu.csrs.set(0x341, 0x8000);
     let inst_mret = 0x30200073;
     assert!(cpu.execute_inst32(inst_mret, &mut mem).is_ok());
     assert_eq!(cpu.pc, 0x8000);
@@ -744,19 +744,19 @@ fn test_csr_immediate_instructions() {
     // CSRRWI x1, 0x300 (mstatus), zimm 5 -> sets mstatus to 5
     let inst = encode_i(0x73, 1, 5, 5, 0x300);
     assert!(cpu.execute_inst32(inst, &mut mem).is_ok());
-    assert_eq!(*cpu.csrs.get(&0x300).unwrap(), 5);
+    assert_eq!(cpu.csrs.get(0x300), 5);
 
     // CSRRSI x2, 0x300, zimm 8 -> sets bit 3 (0b0101 | 0b1000 = 0b1101 = 13)
     let inst = encode_i(0x73, 2, 6, 8, 0x300);
     assert!(cpu.execute_inst32(inst, &mut mem).is_ok());
     assert_eq!(cpu.read_reg(2), 5);
-    assert_eq!(*cpu.csrs.get(&0x300).unwrap(), 13);
+    assert_eq!(cpu.csrs.get(0x300), 13);
 
     // CSRRCI x3, 0x300, zimm 4 -> clears bit 2 (0b1101 & ~0b0100 = 0b1001 = 9)
     let inst = encode_i(0x73, 3, 7, 4, 0x300);
     assert!(cpu.execute_inst32(inst, &mut mem).is_ok());
     assert_eq!(cpu.read_reg(3), 13);
-    assert_eq!(*cpu.csrs.get(&0x300).unwrap(), 9);
+    assert_eq!(cpu.csrs.get(0x300), 9);
 }
 
 // ---------------------------------------------------------------------------
@@ -1078,16 +1078,16 @@ const MSTATUS_MPIE: u32 = 1 << 7;
 #[test]
 fn test_interrupt_records_cause_and_epc_separately() {
     let mut cpu = Cpu::new();
-    cpu.csrs.insert(CSR_MTVEC, 0x8000);
-    cpu.csrs.insert(CSR_MSTATUS, MSTATUS_MIE);
+    cpu.csrs.set(CSR_MTVEC, 0x8000);
+    cpu.csrs.set(CSR_MSTATUS, MSTATUS_MIE);
     cpu.pc = 0x1234;
 
     cpu.handle_interrupt(7);
 
     // mepc and mcause live in different registers, so the cause does not
     // overwrite the return address.
-    assert_eq!(*cpu.csrs.get(&CSR_MEPC).unwrap(), 0x1234);
-    assert_eq!(*cpu.csrs.get(&CSR_MCAUSE).unwrap(), 0x8000_0007);
+    assert_eq!(cpu.csrs.get(CSR_MEPC), 0x1234);
+    assert_eq!(cpu.csrs.get(CSR_MCAUSE), 0x8000_0007);
     assert_eq!(cpu.pc, 0x8000);
 }
 
@@ -1095,15 +1095,15 @@ fn test_interrupt_records_cause_and_epc_separately() {
 fn test_interrupt_disables_further_interrupts_until_mret() {
     let mut cpu = Cpu::new();
     let mut mem = Memory::new();
-    cpu.csrs.insert(CSR_MTVEC, 0x8000);
-    cpu.csrs.insert(CSR_MSTATUS, MSTATUS_MIE);
+    cpu.csrs.set(CSR_MTVEC, 0x8000);
+    cpu.csrs.set(CSR_MSTATUS, MSTATUS_MIE);
     cpu.pc = 0x1234;
 
     assert!(cpu.interrupts_enabled());
     cpu.handle_interrupt(7);
 
     // Inside the handler MIE is clear and the previous value is kept in MPIE.
-    let mstatus = *cpu.csrs.get(&CSR_MSTATUS).unwrap();
+    let mstatus = cpu.csrs.get(CSR_MSTATUS);
     assert_eq!(mstatus & MSTATUS_MIE, 0);
     assert_eq!(mstatus & MSTATUS_MPIE, MSTATUS_MPIE);
     assert!(!cpu.interrupts_enabled());
@@ -1111,13 +1111,13 @@ fn test_interrupt_disables_further_interrupts_until_mret() {
     // A second interrupt while the handler runs must not clobber mepc.
     // (`run()` gates delivery on `interrupts_enabled`.)
     assert!(!cpu.interrupts_enabled());
-    assert_eq!(*cpu.csrs.get(&CSR_MEPC).unwrap(), 0x1234);
+    assert_eq!(cpu.csrs.get(CSR_MEPC), 0x1234);
 
     // MRET returns to the interrupted PC and re-enables interrupts.
     cpu.pc = 0x8000;
     assert!(cpu.execute_inst32(0x30200073, &mut mem).is_ok());
     assert_eq!(cpu.pc, 0x1234);
-    let mstatus = *cpu.csrs.get(&CSR_MSTATUS).unwrap();
+    let mstatus = cpu.csrs.get(CSR_MSTATUS);
     assert_eq!(mstatus & MSTATUS_MIE, MSTATUS_MIE);
     assert_eq!(mstatus & MSTATUS_MPIE, MSTATUS_MPIE);
     assert!(cpu.interrupts_enabled());
@@ -1127,8 +1127,8 @@ fn test_interrupt_disables_further_interrupts_until_mret() {
 fn test_mret_leaves_interrupts_disabled_when_mpie_is_clear() {
     let mut cpu = Cpu::new();
     let mut mem = Memory::new();
-    cpu.csrs.insert(CSR_MEPC, 0x2000);
-    cpu.csrs.insert(CSR_MSTATUS, 0);
+    cpu.csrs.set(CSR_MEPC, 0x2000);
+    cpu.csrs.set(CSR_MSTATUS, 0);
 
     assert!(cpu.execute_inst32(0x30200073, &mut mem).is_ok());
     assert_eq!(cpu.pc, 0x2000);
@@ -1146,8 +1146,8 @@ fn test_interrupt_handler_returns_to_interrupted_instruction() {
     // Interrupted code at 0x1000: addi x6, x6, 1
     mem.write_u32(0x1000, encode_i(0x13, 6, 0, 6, 1));
 
-    cpu.csrs.insert(CSR_MTVEC, 0x8000);
-    cpu.csrs.insert(CSR_MSTATUS, MSTATUS_MIE);
+    cpu.csrs.set(CSR_MTVEC, 0x8000);
+    cpu.csrs.set(CSR_MSTATUS, MSTATUS_MIE);
     cpu.pc = 0x1000;
 
     cpu.handle_interrupt(11);

@@ -284,3 +284,41 @@ fn test_ecall_dispatch_timing() {
         dur_enabled / 100_000
     );
 }
+
+/// A guest that writes bytes ending in NUL must get those bytes through
+/// unchanged.
+///
+/// `SYS_write` used to run `while bytes.last() == Some(&0) { bytes.pop(); }`
+/// before handing the buffer to the host. Any program writing binary data that
+/// happened to end in a zero byte had it silently truncated, and a program
+/// writing a run of zeros lost all of them.
+#[test]
+fn sys_write_keeps_trailing_zero_bytes() {
+    reset_mocks();
+    let mut cpu = Cpu::new();
+    let mut mem = Memory::new();
+
+    let payload: &[u8] = &[b'A', b'B', 0, 0, 0];
+    let buf_ptr = 0x2000u32;
+    mem.write_bytes(buf_ptr, payload);
+
+    cpu.write_reg(17, 64); // SYS_write
+    cpu.write_reg(10, 1); // fd = stdout
+    cpu.write_reg(11, buf_ptr);
+    cpu.write_reg(12, payload.len() as u32);
+
+    handle_ecall(&mut cpu, &mut mem).expect("SYS_write failed");
+
+    let written = get_mock_stdout();
+    assert_eq!(written.len(), 1, "expected exactly one host write");
+    assert_eq!(
+        written[0].as_bytes(),
+        payload,
+        "the trailing zero bytes were dropped on the way to the host"
+    );
+    assert_eq!(
+        cpu.read_reg(10),
+        payload.len() as u32,
+        "SYS_write must report every byte as written"
+    );
+}

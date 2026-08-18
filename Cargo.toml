@@ -16,6 +16,16 @@ goblin = { version = "0.8", default-features = false, features = ["elf32", "elf6
 serde = { version = "1.0", features = ["derive"] }
 serde-wasm-bindgen = "0.6"
 tsify-next = { version = "0.5.6", features = ["js"] }
+# Optional so the native builds and the test runners do not carry it. The
+# browser build turns it on; see the `make build` recipe.
+console_error_panic_hook = { version = "0.1", optional = true }
+
+[features]
+default = []
+# Installs a panic hook that prints the Rust panic message, its location and a
+# backtrace to the browser console. Without it `panic = "abort"` plus
+# `strip = true` turns every panic into an opaque `unreachable` trap.
+console_error_panic_hook = ["dep:console_error_panic_hook"]
 
 [profile.release]
 opt-level = 3
@@ -25,7 +35,20 @@ panic = "abort"
 strip = true
 
 [package.metadata.wasm-pack.profile.release]
-wasm-opt = false
+# Binaryen's -O2 over the wasm-bindgen output. It was off, which left the
+# shipped module unoptimised beyond what LLVM had already done.
+# The Binaryen that wasm-pack downloads is older than the WebAssembly feature
+# set rustc now emits by default, so validation fails unless those features are
+# named explicitly.
+wasm-opt = [
+  "-O2",
+  "--enable-bulk-memory",
+  "--enable-nontrapping-float-to-int",
+  "--enable-sign-ext",
+  "--enable-mutable-globals",
+  "--enable-reference-types",
+  "--enable-multivalue",
+]
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
@@ -33,6 +56,10 @@ proptest = "1.4"
 
 [[bench]]
 name = "memory_benchmarks"
+harness = false
+
+[[bench]]
+name = "throughput_benchmarks"
 harness = false
 
 

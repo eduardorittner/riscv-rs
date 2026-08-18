@@ -208,3 +208,38 @@ fn a_breakpoint_is_ignored_when_debug_mode_is_off() {
     assert_eq!(outcome.status, SliceStatus::Halted);
     assert_eq!(outcome.exit_code, 5);
 }
+
+/// A 32-bit instruction whose two halves live in different pages.
+///
+/// Instruction fetch reads one four-byte window with a single page lookup. That
+/// window cannot span two pages, so the fetch reports itself as partial and the
+/// CPU re-reads the full word. If it ever stopped doing that, the upper half of
+/// the instruction would read as zero and the decode would be wrong.
+#[test]
+fn a_32_bit_instruction_across_a_page_boundary_executes() {
+    const PAGE_SIZE: u32 = 65536;
+    // The last halfword of page 0: the instruction's upper half is in page 1.
+    let straddling = PAGE_SIZE - 2;
+
+    let mut cpu = Cpu::new();
+    cpu.pc = straddling;
+    let mut mem = Memory::new();
+
+    // `addi x7, x0, 42` written so that it crosses the page edge, followed by
+    // the exit sequence on the far side.
+    let inst = addi(7, 0, 42);
+    mem.write_u16(straddling, inst as u16);
+    mem.write_u16(straddling + 2, (inst >> 16) as u16);
+    mem.write_u32(straddling + 4, addi(17, 0, 93)); // a7 = SYS_exit
+    mem.write_u32(straddling + 8, addi(10, 0, 7)); // a0 = 7
+    mem.write_u32(straddling + 12, ECALL);
+
+    let outcome = cpu.run_slice(&mut mem, 100);
+
+    assert_eq!(
+        cpu.regs[7], 42,
+        "the straddling instruction decoded to the wrong value"
+    );
+    assert_eq!(outcome.status, SliceStatus::Halted);
+    assert_eq!(outcome.exit_code, 7);
+}

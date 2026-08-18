@@ -79,6 +79,12 @@ impl Default for Simulator {
 impl Simulator {
     #[wasm_bindgen(constructor)]
     pub fn new() -> Self {
+        // Without the hook, `panic = "abort"` and `strip = true` turn a Rust
+        // panic into a bare `unreachable` trap: no message, no location, and
+        // nothing in the browser console to act on.
+        #[cfg(feature = "console_error_panic_hook")]
+        console_error_panic_hook::set_once();
+
         Self {
             cpu: Cpu::new(),
             mem: Memory::new(),
@@ -301,17 +307,25 @@ impl Simulator {
         snap
     }
 
+    /// Run until a breakpoint, a halt or a trap stops the guest.
+    ///
+    /// This drives `run_slice`, which keeps the whole gap inside the CPU's
+    /// inner loop. It used to call `step_instruction` once per instruction,
+    /// paying the full per-step entry and exit — the breakpoint test, the
+    /// halt test and the error formatting — for every instruction between the
+    /// current PC and the breakpoint. A continue across a ten-million
+    /// instruction gap is the common case in a debug session.
     pub fn run_until_breakpoint(&mut self) -> DebuggerSnapshot {
         loop {
-            let res = self.cpu.step_instruction(&mut self.mem);
-            match res {
-                StepResult::BreakpointHit(addr) => {
-                    return self.get_snapshot_js(true, addr);
+            let outcome = self.cpu.run_slice(&mut self.mem, u32::MAX);
+            match outcome.status {
+                SliceStatus::Breakpoint => return self.get_snapshot_js(true, outcome.pc),
+                SliceStatus::Halted | SliceStatus::Trapped => {
+                    return self.get_snapshot_js(false, 0)
                 }
-                StepResult::Halted(_) | StepResult::Trap(_) => {
-                    return self.get_snapshot_js(false, 0);
-                }
-                StepResult::Ok => {}
+                // The slice spent its whole budget and the guest is still
+                // running. Take another one.
+                SliceStatus::Running => {}
             }
         }
     }
