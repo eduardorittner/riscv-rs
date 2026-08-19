@@ -15,30 +15,37 @@ impl SimConfig {
         while i < args.len() {
             let arg = &args[i];
 
-            if arg == "--newlib" || arg == "-n" {
-                config.is_newlib = true;
-                if i + 1 < args.len() && !args[i + 1].starts_with('-') {
-                    config.binary_path = Some(args[i + 1].clone());
-                    i += 1;
+            match arg.as_ref() {
+                "--newlib" | "-n" => {
+                    config.is_newlib = true;
+                    if i + 1 < args.len() && !args[i + 1].starts_with('-') {
+                        config.binary_path = Some(args[i + 1].clone());
+                        i += 1;
+                    }
                 }
-            } else if arg == "--isa" {
-                if i + 1 < args.len() {
-                    config.isa_string = args[i + 1].clone();
-                    i += 1;
+                "--isa" => {
+                    if i + 1 < args.len() {
+                        config.isa_string = args[i + 1].clone();
+                        i += 1;
+                    }
                 }
-            } else if arg == "--setreg" {
-                if i + 1 < args.len() {
-                    let kv = &args[i + 1];
-                    Self::parse_setreg(&mut config, kv);
-                    i += 1;
+                setreg if setreg.starts_with("--setreg") => {
+                    if let Some(kv) = setreg.strip_prefix("--setreg=") {
+                        Self::parse_setreg(&mut config, kv);
+                    } else if i + 1 < args.len() {
+                        let kv = &args[i + 1];
+                        Self::parse_setreg(&mut config, kv);
+                        i += 1;
+                    }
                 }
-            } else if let Some(kv) = arg.strip_prefix("--setreg=") {
-                Self::parse_setreg(&mut config, kv);
-            } else if arg == "--interactive" {
-                config.is_interactive = true;
-            } else if !arg.starts_with('-') && config.binary_path.is_none() {
-                let cleaned = arg.trim_start_matches('/').trim_start_matches("working/");
-                config.binary_path = Some(cleaned.to_string());
+                "--interactive" => {
+                    config.is_interactive = true;
+                }
+                s if s.starts_with('-') && config.binary_path.is_none() => {
+                    let cleaned = arg.trim_start_matches('/').trim_start_matches("working/");
+                    config.binary_path = Some(cleaned.to_string());
+                }
+                _ => {}
             }
 
             i += 1;
