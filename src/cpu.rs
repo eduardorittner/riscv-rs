@@ -148,21 +148,6 @@ const CSR_COUNT: usize = 4096;
 const CSR_MASK: usize = CSR_COUNT - 1;
 
 /// The control and status registers, indexed by their 12-bit number.
-///
-/// This used to be a `HashMap<u16, u32>`. `interrupts_enabled` reads `mstatus`
-/// on every interrupt poll of the run loop, and each of those reads hashed a
-/// key and probed a bucket. The whole CSR space is 4096 words — 16 KB — so a
-/// flat array holds all of it and turns every read and write into one indexed
-/// load.
-///
-/// An address that was never written reads as zero, which is what the map's
-/// `unwrap_or(&0)` did at every call site.
-///
-/// `Cpu` holds this behind a `Box`. Inline, its 16 KB sat between the fields
-/// the run loop touches on every instruction — `pc`, `is_halted`,
-/// `step_counter` — and pushed them onto distant cache lines, which measured
-/// as a 3 to 6 percent throughput loss even though CSR reads themselves got
-/// cheaper.
 pub struct CsrFile {
     values: [u32; CSR_COUNT],
 }
@@ -280,11 +265,9 @@ impl Cpu {
         self.step_counter += 1;
 
         if let Err(err) = instruction_result {
+            host_imports::js_print_err(err.to_string().as_str());
             if let CpuError::UnknownSyscall(ref sys_err) = err {
-                host_imports::js_print_err(&format!(
-                    "Unknown Syscall: {} (a0: {:#x}, a1: {:#x}, a2: {:#x}, a3: {:#x})\n",
-                    sys_err.sys_num, sys_err.a0, sys_err.a1, sys_err.a2, sys_err.a3
-                ));
+                host_imports::js_print_err(err.to_string().as_str());
                 host_imports::notify_unknown_syscall(
                     sys_err.sys_num,
                     sys_err.a0,
@@ -292,12 +275,8 @@ impl Cpu {
                     sys_err.a2,
                     sys_err.a3,
                 );
-            } else {
-                host_imports::js_print_err(&format!(
-                    "CPU Exec Error at PC {:#010x}: {}\n",
-                    pc, err
-                ));
             }
+
             // Every trap stops the machine. Without this the debugger would
             // hand back the same snapshot for ever on a faulting instruction.
             self.trapped = true;
@@ -374,8 +353,7 @@ impl Cpu {
         let budget = budget as u64;
         let mut executed: u64 = 0;
         // A slice runs to completion without yielding, so the debug settings
-        // cannot change while it runs. Hoisting the test keeps the inner loop as
-        // cheap as the unsliced loop it replaced.
+        // cannot change while it runs.
         let watch_breakpoints = self.debug_enabled && !self.breakpoints.is_empty();
         let mut skip_breakpoint = self.resume_past_breakpoint.take();
 
@@ -424,8 +402,8 @@ impl Cpu {
 
                 let pc = self.pc;
                 // One page lookup for the whole instruction. The low halfword
-                // classifies it; the high halfword is already in hand when the
-                // instruction turns out to be 32 bits wide.
+                // classifies it; the high halfword is already in hand if/when
+                // the instruction turns out to be 32 bits wide.
                 let (window, wide) = mem.fetch_window(pc);
                 let inst16 = window as u16;
 
